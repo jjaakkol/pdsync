@@ -1,0 +1,2 @@
+# pdsync
+Paraller directory synchronization
