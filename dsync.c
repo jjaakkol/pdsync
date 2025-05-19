@@ -592,10 +592,11 @@ int copy_regular(const char *path,
     }
 
     /* Check for sparse file */
-    if ( from_stat.st_size/512 > from_stat.st_blocks ) {
+    if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
 	static int sparse_warned=0;
 	if (!sparse_warned && !do_compress && !preserve_sparse) {
-	    show_warning("Sparse files detected. Consider --sparse option",from);
+	    show_warning("Sparse or compressed files detected. Consider --sparse option",from);
+            sparse_warned++;
 	}
 	sparse_copy=preserve_sparse;
     }
