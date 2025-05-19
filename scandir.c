@@ -15,7 +15,7 @@ typedef struct PreScanStruct {
 
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-volatile PreScan *pre_scan_list=NULL;
+PreScan *pre_scan_list=NULL;
 pthread_t pre_reader;
 
 static int my_strcmp(const void *x, const void *y) {
