@@ -214,20 +214,19 @@ static int write_path(FILE *f, const EntryPath *path, const Entry *current) {
 /* Shows the progress, obeying privacy options */
 static void show_progress(const EntryPath *path, const Entry *current) {
     static time_t last=0;
-    static int x=0;
+    static int last_scanned=0;
     time_t now;
 
     if (!progress) return;
-    x++;
-    if (x<15) return; /* Save toms time() syscalls */
-    x=0;
 
     /* Once a second */    
     time(&now);
     if (last==now) return;
 
     last=now;
-    fprintf(tty_stream,"PG: %7d ",scans.entries_scanned);
+    fprintf(tty_stream,"PG: %7d (%d files/s) ",scans.entries_scanned,
+        scans.entries_scanned-last_scanned);
+    last_scanned=scans.entries_scanned;
     write_path(tty_stream,path,current);
     fprintf(tty_stream,"\n");
 }
