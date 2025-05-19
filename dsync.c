@@ -1178,6 +1178,7 @@ int dsync(char *source_dir,
 	opers.read_errors++;
 	return 0;
     }
+    if (from->entries>0) show_progress(parent,&from->array[0]);
     if (atime_preserve) {
 	struct utimbuf tmp;
 	tmp.actime=cdir.st_atime;
@@ -1206,6 +1207,7 @@ int dsync(char *source_dir,
     
     if (delete) remove_old_entries(todir, from, to);
 
+    /* Loop through the source directory entries */
     for(i=0;i<from->entries &&
 	    opers.write_errors==0
 	    ;i++) {

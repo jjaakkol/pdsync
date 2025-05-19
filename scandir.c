@@ -62,6 +62,7 @@ Directory *scan_directory(const char *dir) {
     } 
     closedir(d);
     
+    /* TODO: maybe stat the directories first, then sort them */
     /* Sort the directory entries */
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
 
@@ -102,7 +103,8 @@ Directory *scan_directory(const char *dir) {
 		nd->array[i].link[link_len]=0;
 	    }
 	}
-	nd->array[i].name=names[i];	
+	nd->array[i].name=names[i];
+        scans.entries_scanned++;
     }
 
     /* Names is no longer needed */
