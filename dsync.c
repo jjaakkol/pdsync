@@ -454,7 +454,7 @@ int remove_hierarchy(char *path,
     }
     {
 	char tmpbuf[MAXLEN];
-	getcwd(tmpbuf,sizeof(tmpbuf));
+	if ( !getcwd(tmpbuf,sizeof(tmpbuf)) ) goto fail;
 	assert(strncmp(target_dir,tmpbuf,target_dir_len)==0);
     }
     path[pathlen]='/';
@@ -555,7 +555,6 @@ int copy_regular(const char *path,
     int tofd=-1;
     struct stat from_stat;
     int sparse_copy=0;
-    char buf[16384];
     int r;
     int ret=0;
 
@@ -651,26 +650,15 @@ int copy_regular(const char *path,
     } else if (sparse_copy) {
 	/* Copy loop which handles sparse blocks */
 	char *spbuf=NULL;
-	struct stat tostat;
-	int bsize=0;
-
-	/* It is more useful to use blksize of target filesystem */
-	if (fstat(tofd,&tostat)<0) {
-	    perror("fstat");
-	    goto fail;
-	}
-	bsize=tostat.st_blksize;
-	if (bsize<128) bsize=128; /* Sanity */
+	int bsize=4096; // 4096 is the default size of many fs blocks
 	
-	/* If the fs has large bufsize allocate buffer from heap */
-	if (bsize>sizeof(buf)) {
-	    spbuf=malloc(from_stat.st_blksize);
-	    if (!spbuf) perror("malloc");
+	spbuf=malloc(bsize);
+        if (!spbuf) {
+            perror("malloc");
 	    goto fail;
-	} else {
-	    spbuf=buf;
-	}
+        }
 	
+        /* Read and skip blocks with only zeros */
 	while( (r=read(fromfd,spbuf,bsize)) > 0 ) {
 	    int written=0;
 	    while(written<r && spbuf[written]==0) written++;
@@ -696,10 +684,12 @@ int copy_regular(const char *path,
 		opers.bytes_copied+=w;
 	    }
 	}
-	if (spbuf!=buf) free(spbuf);
+	free(spbuf);
 	
     } else {
-	/* Simple loop with no regard to sparse blocks */	   
+	/* Simple loop with no regard to filesystem block size or sparse blocks*/
+	/* FIXME: support larger writes and avoid block boundaries to avoid write amplification */
+        char buf[1024*1024];
 	while( (r=read(fromfd,buf,sizeof(buf))) > 0 ) {
 	    int written=0;
 	    while (written<r) {
@@ -822,7 +812,7 @@ int create_target(const char *path,
 	    }
 	    memset(&addr,0,sizeof(addr));
 	    addr.sun_family=AF_UNIX;
-	    strncpy(addr.sun_path,todir,sizeof(addr.sun_path));
+	    strncpy(addr.sun_path,todir,sizeof(addr.sun_path)-1);
 	    if (bind(s,&addr,sizeof(addr))<0) {
 		show_error("bind (socket creation errors ignored)",todir);
 	    } else {
@@ -1398,11 +1388,11 @@ int dsync(char *source_dir,
 	/* Set the inode bits */
 	if (!dryrun && !delete_only) {
 	    if (preserve_owner || preserve_group) {
-		uid_t uid=-1;
-		gid_t gid=-1;
+                uid_t uid=-1;
+                gid_t gid=-1;
 		if (preserve_group) gid=fentry->stat.st_gid;
 		if (preserve_owner) uid=fentry->stat.st_uid;
-		if (lchown(todir,fentry->stat.st_uid, fentry->stat.st_gid)<0) {
+		if (lchown(todir, uid, gid)<0) {
 		    show_error("lchown",todir);
 		    opers.write_errors++;
 		}
@@ -1482,7 +1472,10 @@ int main(int argc, char *argv[]) {
     /* Start the pre-scanning thread if needed */
     if (pre_scan) start_pre_scan_thread();
     
-    realpath(argv[optind+1],s_topath);
+    if (realpath(argv[optind+1],s_topath)==NULL) {
+        fprintf(stderr,"realpath() failed for %s\n",argv[optind+1]);
+        exit(1);
+    }
     if (stat(s_topath,&target_stat)<0 || 
 	!S_ISDIR(target_stat.st_mode)) {
 	fprintf(stderr,"target '%s' is not a directory.\n",s_topath);
@@ -1497,7 +1490,10 @@ int main(int argc, char *argv[]) {
 	fprintf(stderr,"stat('%s'): %s\n",argv[optind],strerror(errno));
 	exit(1);
     }
-    getcwd(s_frompath,sizeof(s_frompath));
+    if (getcwd(s_frompath,sizeof(s_frompath))==NULL)  {
+        fprintf(stderr,"getcwd(source_dir) failed: %s",strerror(errno));
+        exit(1);
+    }
 
     target_dir=strdup(s_topath);
     if (!target_dir) {
