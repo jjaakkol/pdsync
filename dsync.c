@@ -436,20 +436,24 @@ int remove_file(const char *file) {
     return 0;
 }
 
-int remove_hierarchy(char *path, 
+int remove_hierarchy(
+                     char *path, 
 		     const struct stat *pathstat,
 		     const char *dir, 
+                     int parentfd,
 		     const struct stat *dirstat) {
     struct stat thisdir;
     Directory *del=NULL;
     int i;
     int skip_rmdir=0;
     const int pathlen=strlen(path);
+    int dirfd=-1;
 
-    if (chdir(dir)<0) {
+    dirfd=openat(parentfd,dir,O_RDONLY|O_DIRECTORY);
+    if (dirfd<0 || fchdir(dirfd)<0) {
 	show_error2("chdir",path,dir);
 	opers.write_errors++;
-	return 0;
+	goto fail;
     }
     {
 	char tmpbuf[MAXLEN];
@@ -480,7 +484,7 @@ int remove_hierarchy(char *path,
 	show_warning("Skipping removal of target directory (broken filesystem?).\n",path);
 	goto fail;
     }
-    del=scan_directory(".");
+    del=scan_directory(".",parentfd);
     if (!del) {
 	show_error("readdir",path);
 	goto fail;
@@ -493,24 +497,24 @@ int remove_hierarchy(char *path,
 	}
 	if (S_ISDIR(file.st_mode)) {
 	    int r;
-	    r=remove_hierarchy(path,&thisdir,del->array[i].name,&file);	    
+	    r=remove_hierarchy(path,&thisdir,del->array[i].name,parentfd,&file);	    
 	    if (r<0) goto fail;
 	} else {
-	    if (verbose) {
-		printf("RM: %s/%s\n",path,del->array[i].name);
-	    }
 	    if (!dryrun && unlink(del->array[i].name)<0) {
 		show_error2("unlink",path,del->array[i].name);
 		/* FIXME: maybe continue here? */
 		goto fail;
 	    } else {
+                if (verbose) {
+		  printf("RM: %s/%s\n",path,del->array[i].name);
+	        }
 		opers.entries_removed++;
 	    }
 	}
     }
 
-
  cleanup:
+    if (dirfd>=0) close(dirfd);
     path[pathlen]='\0';
     if (del) d_freedir(del);
     if (chdir("..")<0 ||
@@ -859,7 +863,7 @@ int create_target(const char *path,
     return -1;
 }
 
-int remove_entry(char *todir, const char *name, const struct stat *stat) {
+int remove_entry(char *todir, const char *name, int parentfd, const struct stat *stat) {
     int tolen=strlen(todir);
     int len=strlen(name);
 
@@ -874,31 +878,21 @@ int remove_entry(char *todir, const char *name, const struct stat *stat) {
     }
 
     if (S_ISDIR(stat->st_mode)) {
-	/* Need to remove a directory hierarchy */
-	/* FIXME: this might run out of filedescriptors (like tmpwatch) */
-	int fd=open(".",O_RDONLY);
-	if (fd<0) {
-	    show_error2("readdir",todir,name);
-	    opers.write_errors++;
-	    return 0;
-	} else {
 	    struct stat tmp;
 	    if (chdir(todir)==0 &&
 		lstat(".",&tmp)==0 && 
 		S_ISDIR(tmp.st_mode)) {
-		remove_hierarchy(todir,&tmp,name,stat);
+		remove_hierarchy(todir,&tmp,name,parentfd,stat);
 	    } else {
 		show_error2("remove directory",todir,name);
 	    }
-	    if (fchdir(fd)<0) {
+	    if (fchdir(parentfd)<0) {
 		/* This really should not happen, no matter what.
 		 * So I save myself the programming trouble by not providing
 		 * a graceful error mechanism */
 		fprintf(stderr,"FATAL: remove_entry: fchdir(fromdir): %s\n",strerror(errno));
 		exit(2);
 	    }
-	    close(fd);
-	}
     } else {
 	/* Need to remove a plain file */
 	todir[tolen]='/';
@@ -963,7 +957,8 @@ static int should_exclude(const char *name) {
 
 int remove_old_entries(char *todir, 
 		       const Directory *from,
-		       const Directory *to) {
+		       const Directory *to,
+                       int to_parentfd) {
     int to_i=0;
 
     /* Remove missing files and directories */
@@ -988,13 +983,12 @@ int remove_old_entries(char *todir,
 		continue;
 	    }
 	    toname[savedpos]=savedch;
-
 	}
 	
 	if ( should_compress(to->array[to_i].name, &to->array[to_i].stat) ||
 	     directory_lookup(from,to->array[to_i].name)==NULL) {
 	    /* Entry no longer exists or should be compressed */
-	    remove_entry(todir,to->array[to_i].name,&to->array[to_i].stat);
+	    remove_entry(todir,to->array[to_i].name,to_parentfd,&to->array[to_i].stat);
 	} 
 
 	if (opers.write_errors) return -1;
@@ -1153,30 +1147,34 @@ int dsync(char *source_dir,
 	  const char *source_root, 
 	  char *todir, const EntryPath *parent) {
     struct stat cdir;
+    int fromfd=-1;
+    int tofd=-1;
     Directory *from=NULL;
     Directory *to=NULL;
     int tolen=strlen(todir);
     int sourcelen=strlen(source_dir);
     int i;
     EntryPath current={parent,NULL};
+    int ret=-1;
 
-    if (stat(".",&cdir)!=0) {
+    fromfd=open(".",O_DIRECTORY|O_RDONLY);
+    if (fromfd<0 || fstat(fromfd,&cdir)!=0) {
 	show_error("stat",source_dir);
 	opers.read_errors++;
-	return 0;
+	goto fail;
     }
     if (parent && 
 	(cdir.st_dev!=parent->entry->stat.st_dev || 
 	 cdir.st_ino!=parent->entry->stat.st_ino)) {
 	show_error("Directory changed",source_dir);
 	opers.read_errors++;
-	return 0;
+	goto fail;
     }
-    from=scan_directory(".");
+    from=scan_directory(".",fromfd);
     if (from==NULL) {
 	show_error("readdir",source_dir);
 	opers.read_errors++;
-	return 0;
+	goto fail;
     }
     if (from->entries>0) show_progress(parent,&from->array[0]);
     if (atime_preserve) {
@@ -1188,10 +1186,14 @@ int dsync(char *source_dir,
 	    opers.read_errors++;
 	}
     }
+
+    tofd=open(todir,O_RDONLY|O_DIRECTORY|O_NOATIME);
+    if (tofd<0) goto fail;
+
     if (pre_scan) {
-	to=pre_scan_directory(todir);
+	to=pre_scan_directory(todir,tofd);
     } else {
-	to=scan_directory(todir);
+	to=scan_directory(todir,tofd);
     }
     if ( delete_only && to==NULL ) {
 	if (verbose) {
@@ -1205,7 +1207,7 @@ int dsync(char *source_dir,
 	goto fail;
     }
     
-    if (delete) remove_old_entries(todir, from, to);
+    if (delete) remove_old_entries(todir, from, to, tofd);
 
     /* Loop through the source directory entries */
     for(i=0;i<from->entries &&
@@ -1215,8 +1217,6 @@ int dsync(char *source_dir,
 	const int dlen=strlen(fentry->name);
 	const Entry *tentry=NULL;
 	int do_compress=0;
-	   
-	scans.entries_scanned++;
 
 	/* Progress output? */
 	show_progress(parent,fentry);
@@ -1257,7 +1257,7 @@ int dsync(char *source_dir,
 	    /* Add the suffix to compressed file name */
 	    snprintf(todir+tolen,MAXLEN-tolen,"/%s%s",fentry->name,suffix);
 	    if (directory_lookup(from,todir+tolen+1)) {
-		show_warning("Compressed file and compress target both exist",
+		show_warning("Compressed file and compressed target both exist",
 			     todir);
 		do_compress=0;
 		snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
@@ -1280,7 +1280,7 @@ int dsync(char *source_dir,
 		    if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			/* Entry exists, but it is OK to remove it */
 			todir[tolen]='\0';
-			remove_entry(todir,tentry->name,&tentry->stat);
+			remove_entry(todir,tentry->name,tofd,&tentry->stat);
 			todir[tolen]='/';
 		    } else {
 			show_warning("Directory is in the way. Consider --delete",todir);
@@ -1419,15 +1419,15 @@ int dsync(char *source_dir,
     }
 
     scans.dirs_scanned++;
-    if (from) d_freedir(from);
-    if (to) d_freedir(to);
-    todir[tolen]=0;
-    return 0;
+    ret=0;
+
  fail:
+    if (fromfd>=0) close(fromfd);
+    if (tofd>=0) close(tofd);
     if (from) d_freedir(from);
     if (to) d_freedir(to);
     todir[tolen]=0;
-    return -1;
+    return ret;
 }
 
 int main(int argc, char *argv[]) {

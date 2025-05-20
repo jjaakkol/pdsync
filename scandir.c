@@ -7,6 +7,7 @@ typedef enum {
 } ScanState;
 
 typedef struct PreScanStruct {
+    int parentfd;
     char *dir;
     ScanState state;
     Directory *result;
@@ -26,8 +27,9 @@ static int my_strcmp(const void *x, const void *y) {
 
 /* NOTE: if --pre-scan is used, scan_directory may be called 
  *       from different threads */
-Directory *scan_directory(const char *dir) {
-    DIR *d=opendir(dir);
+Directory *scan_directory(const char *name, int parentfd) {
+    DIR *d=NULL;
+    int dirfd=-1;
     Directory *nd=NULL;
     struct dirent *dent;
     int i;
@@ -36,10 +38,29 @@ Directory *scan_directory(const char *dir) {
     char **names=NULL;
     char scdir[MAXLEN];
 
-    if (!d) return NULL;
+     /* TODO: should the O_NOATIME be a flag*/
+    dirfd=openat(parentfd,name,O_NOFOLLOW|O_RDONLY|O_DIRECTORY);
+    if (dirfd<0) {
+        show_error("openat",name);
+        return NULL;
+    }
+    d=fdopendir(dirfd);
+    if (!d) {
+        show_error("fdopenbdir", name);
+        close(dirfd);
+        return NULL;
+    }
+    dirfd=-1; /* Sanity */
+
     if ( (names=malloc(sizeof(char *)*allocated)) ==NULL) {
 	goto fail;
     }
+
+    /* Allocate the Directory structure */
+    if ( ! (nd=malloc(sizeof(Directory))) ) {
+	goto fail;
+    }
+    nd->parentfd=parentfd;
 
     /* scan the directory */
     while( (dent=readdir(d)) ) {
@@ -66,20 +87,16 @@ Directory *scan_directory(const char *dir) {
     /* Sort the directory entries */
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
 
-    /* Allocate the Directory structure */
-    if ( ! (nd=malloc(sizeof(Directory))) ) {
-	goto fail;
-    }
     nd->array=malloc(sizeof(Entry)*entries);
     if (!nd->array) goto fail;
     memset(nd->array,0,sizeof(Entry)*entries);
     nd->entries=entries;
 
-    /* Stat the directories */
+    /* Stat all entries */
     for (i=0;i<nd->entries;i++) {
 	assert(i==0 || my_strcmp(&names[i-1],&names[i])<=0);
 	    
-	snprintf(scdir,sizeof(scdir),"%s/%s",dir,names[i]);
+	snprintf(scdir,sizeof(scdir),"%s/%s",name,names[i]);
 	nd->array[i].state=ENTRY_GOOD;
 	if (lstat(scdir,&nd->array[i].stat)<0) {
 	    show_error("lstat",scdir);
@@ -131,7 +148,7 @@ Directory *scan_directory(const char *dir) {
     return NULL;
 }
 
-Directory *pre_scan_directory(const char *dir) {
+Directory *pre_scan_directory(const char *dir, int parentfd) {
     PreScan *d=NULL;
     PreScan *prev=NULL;
     Directory *result=NULL;
@@ -140,7 +157,7 @@ Directory *pre_scan_directory(const char *dir) {
     /* Lock the list */
     pthread_mutex_lock(&mut);
 
-    /* Check if we allready have the dir in scanlist */
+    /* Check if we already have the dir in scanlist */
     d=pre_scan_list;
     while(d && strcmp(d->dir,dir)!=0) {
 	prev=d;
@@ -151,11 +168,11 @@ Directory *pre_scan_directory(const char *dir) {
 	/* We had it in the list */
 	switch(d->state) {
 	case NOT_STARTED:
-	    /* Do it our selves */
+	    /* We need the directory scan to continue, so just do it ourselves now. */
 	    d->state=SCANNING;
 	    scans.pre_scan_misses++;
 	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(dir);
+	    d->result=scan_directory(dir,parentfd);
 	    pthread_mutex_lock(&mut);
 	    break;
 	case SCANNING:
@@ -168,11 +185,11 @@ Directory *pre_scan_directory(const char *dir) {
 	    }
 	    break;
 	case READY:
-	    /* It was ready */
+	    /* Success, the scan had already finished before the results were needed. */
 	    scans.pre_scan_hits++;
 	    break;
 	}
-	/* Now we can remove it from the list */
+	/* Remove the directory from pre-scan list. */
 	if (prev) {
 	    prev->next=d->next;
 	} else {
@@ -186,7 +203,7 @@ Directory *pre_scan_directory(const char *dir) {
     } else {
 	/* We did not have it in the list. Do the old fashion way */
 	scans.pre_scan_misses++;
-	result=scan_directory(dir);
+	result=scan_directory(dir,parentfd);
     }
 
     if (result==NULL) goto out;
@@ -202,6 +219,7 @@ Directory *pre_scan_directory(const char *dir) {
 		exit(1);
 	    }
 	    snprintf(d->dir,len,"%s/%s",dir,result->array[i].name);
+            d->parentfd=parentfd;
 	    d->result=NULL;
 	    d->state=NOT_STARTED;
 	    d->next=pre_scan_list;	    
@@ -224,25 +242,23 @@ void *pre_read_loop(void *arg) {
     pthread_mutex_lock(&mut);
     while(1) {
 	PreScan *d=NULL;
-	int i=0;
 	
 	/* Try to find something to scan */
 	d=pre_scan_list;
-	while(d && d->state!=NOT_STARTED && i<5) {
+
+	while(d && d->state!=NOT_STARTED) {
 	    d=d->next;
-	    i++;
 	}
 	
 	if ( (d==NULL) || d->state!=NOT_STARTED) {
-	    /* Did not find anything. Wait for something new. */
-	    /* printf("Pre_scanner waiting\n"); */
-	    pthread_cond_wait(&cond,&mut);
+	    /* No directories to scan. Wait for something to come to the queue */
+            pthread_cond_wait(&cond,&mut);
 	} else {
 	    /* Found a directory to scan */
 	    d->state=SCANNING;
 	    /* printf("pre_scanner scanning %s\n",d->dir); */
 	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(d->dir);
+	    d->result=scan_directory(d->dir,d->parentfd);
 	    pthread_mutex_lock(&mut);
 	    d->state=READY;
 	    scans.pre_scan_dirs++;

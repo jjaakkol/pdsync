@@ -37,6 +37,7 @@ typedef struct {
 } Entry;
 
 typedef struct {
+    int parentfd;
     int entries;
     Entry *array;
 } Directory;
@@ -55,8 +56,8 @@ typedef struct {
 } Scans;
 extern Scans scans;
 
-Directory *scan_directory(const char *dir);
+Directory *scan_directory(const char *name, int parentfd);
 void show_error(const char *why, const char *file);
-Directory *pre_scan_directory(const char *dir);
+Directory *pre_scan_directory(const char *dir,int parentfd);
 void *pre_read_loop(void *arg);
 void start_pre_scan_thread();
