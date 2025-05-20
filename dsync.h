@@ -36,7 +36,11 @@ typedef struct {
     enum EntryState state;
 } Entry;
 
+
+/* We keep the fd of all directories around until the directories are processed to be able to use 
+   openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
 typedef struct {
+    DIR *handle;
     int parentfd;
     int entries;
     Entry *array;

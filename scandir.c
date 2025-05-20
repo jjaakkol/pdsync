@@ -61,6 +61,7 @@ Directory *scan_directory(const char *name, int parentfd) {
 	goto fail;
     }
     nd->parentfd=parentfd;
+    nd->handle=d;
 
     /* scan the directory */
     while( (dent=readdir(d)) ) {
@@ -81,8 +82,7 @@ Directory *scan_directory(const char *name, int parentfd) {
 	if ( (names[entries]=strdup(dent->d_name))==NULL ) goto fail;
 	entries++;
     } 
-    closedir(d);
-    
+
     /* TODO: maybe stat the directories first, then sort them */
     /* Sort the directory entries */
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
@@ -111,7 +111,8 @@ Directory *scan_directory(const char *name, int parentfd) {
 		 (nd->array[i].link=malloc(link_len+1))==NULL ) {
 		/* Failed to read link. */
 		show_error("readlink",scdir);
-		/* opers.read_errors++; */
+		/* FIXME: read errors is not vible here: 
+                opers.read_errors++; */
 		nd->array[i].link=NULL;
 		nd->array[i].state=ENTRY_READLINK_FAILED;
 	    } else {
@@ -126,6 +127,7 @@ Directory *scan_directory(const char *name, int parentfd) {
 
     /* Names is no longer needed */
     free(names);
+    scans.dirs_scanned++;
 
     return nd;
 

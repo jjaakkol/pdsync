@@ -413,6 +413,7 @@ static void print_opers(const Opers *stats) {
 
 void d_freedir(Directory *dir) {
     assert(dir->entries>=0);
+    if (dir->handle) closedir(dir->handle);
     while(dir->entries>0) {
 	dir->entries--;
 	free(dir->array[dir->entries].name);
@@ -1418,7 +1419,6 @@ int dsync(char *source_dir,
 	}
     }
 
-    scans.dirs_scanned++;
     ret=0;
 
  fail:
