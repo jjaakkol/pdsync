@@ -240,18 +240,23 @@ Directory *pre_scan_directory(const char *dir, int parentfd) {
 
 void *pre_read_loop(void *arg) {
     pthread_mutex_lock(&mut);
+    int ready_count=0;
+
     while(1) {
 	PreScan *d=NULL;
+        ready_count=0;
+
+        /* Limit the amount of pre scans by counting READY ones*/
+        for(d=pre_scan_list; d; d=d->next) {
+           if (d->state==READY) ready_count++;
+        }
 	
 	/* Try to find something to scan */
-	d=pre_scan_list;
+        for(d=pre_scan_list; d && d->state!=NOT_STARTED; d=d->next);
 
-	while(d && d->state!=NOT_STARTED) {
-	    d=d->next;
-	}
-	
-	if ( (d==NULL) || d->state!=NOT_STARTED) {
-	    /* No directories to scan. Wait for something to come to the queue */
+	if ( (d==NULL) || d->state!=NOT_STARTED || ready_count>=16 ) {
+	    /* No directories to scan or ready_count full. Wait for something to come to the queue */
+            /* printf("ready_count=%d\n",ready_count); */
             pthread_cond_wait(&cond,&mut);
 	} else {
 	    /* Found a directory to scan */
