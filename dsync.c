@@ -325,7 +325,7 @@ static void print_scans(const Scans *scans) {
 	printf("%8d directories scanned\n",scans->dirs_scanned);
     }
     if (scans->entries_scanned) {
-	printf("%8d entries scanned\n",scans->entries_scanned);
+	printf("%8d inodes scanned\n",scans->entries_scanned);
     }
     if (scans->dirs_skipped) {
 	printf("%8d directories skipped\n",scans->dirs_skipped);
