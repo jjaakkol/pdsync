@@ -7,7 +7,7 @@ typedef enum {
 } ScanState;
 
 typedef struct PreScanStruct {
-    int parentfd;
+    const Directory *parent;
     char *dir;
     ScanState state;
     Directory *result;
@@ -27,30 +27,28 @@ static int my_strcmp(const void *x, const void *y) {
 
 /* NOTE: if --pre-scan is used, scan_directory may be called 
  *       from different threads */
-Directory *scan_directory(const char *name, int parentfd) {
+Directory *scan_directory(const char *name, const Directory *parent) {
     DIR *d=NULL;
-    int dirfd=-1;
+    int dfd=-1;
     Directory *nd=NULL;
     struct dirent *dent;
     int i;
     int allocated=16;
     int entries=0;
     char **names=NULL;
-    char scdir[MAXLEN];
 
      /* TODO: should the O_NOATIME be a flag*/
-    dirfd=openat(parentfd,name,O_NOFOLLOW|O_RDONLY|O_DIRECTORY);
-    if (dirfd<0) {
+    dfd=openat( (parent) ? dirfd(parent->handle) : AT_FDCWD , name, O_NOFOLLOW|O_RDONLY|O_DIRECTORY);
+    if (dfd<0) {
         show_error("openat",name);
         return NULL;
     }
-    d=fdopendir(dirfd);
+    d=fdopendir(dfd);
     if (!d) {
         show_error("fdopenbdir", name);
-        close(dirfd);
+        close(dfd);
         return NULL;
     }
-    dirfd=-1; /* Sanity */
 
     if ( (names=malloc(sizeof(char *)*allocated)) ==NULL) {
 	goto fail;
@@ -60,7 +58,7 @@ Directory *scan_directory(const char *name, int parentfd) {
     if ( ! (nd=malloc(sizeof(Directory))) ) {
 	goto fail;
     }
-    nd->parentfd=parentfd;
+    nd->parent=parent;
     nd->handle=d;
 
     /* scan the directory */
@@ -94,12 +92,11 @@ Directory *scan_directory(const char *name, int parentfd) {
 
     /* Stat all entries */
     for (i=0;i<nd->entries;i++) {
-	assert(i==0 || my_strcmp(&names[i-1],&names[i])<=0);
-	    
-	snprintf(scdir,sizeof(scdir),"%s/%s",name,names[i]);
-	nd->array[i].state=ENTRY_GOOD;
-	if (lstat(scdir,&nd->array[i].stat)<0) {
-	    show_error("lstat",scdir);
+	assert(i==0 || my_strcmp(&names[i-1],&names[i])<0);
+
+        nd->array[i].state=ENTRY_GOOD;
+	if (fstatat(dfd, names[i],&nd->array[i].stat, AT_SYMLINK_NOFOLLOW)<0) {
+	    show_error("scan_directory lstat",names[i]);
 	    /* Mark the files which cannot be stat:ed */
 	    nd->array[i].state=ENTRY_STAT_FAILED;
 	} else if (S_ISLNK(nd->array[i].stat.st_mode)) {
@@ -107,10 +104,10 @@ Directory *scan_directory(const char *name, int parentfd) {
 	    char linkbuf[MAXLEN];
 	    int link_len;
 
-	    if ( (link_len=readlink(scdir,linkbuf,sizeof(linkbuf)-1))<=0 ||
+	    if ( (link_len=readlinkat(dfd,names[i],linkbuf,sizeof(linkbuf)-1))<=0 ||
 		 (nd->array[i].link=malloc(link_len+1))==NULL ) {
 		/* Failed to read link. */
-		show_error("readlink",scdir);
+		show_error("readlink",names[i]);
 		/* FIXME: read errors is not vible here: 
                 opers.read_errors++; */
 		nd->array[i].link=NULL;
@@ -150,7 +147,7 @@ Directory *scan_directory(const char *name, int parentfd) {
     return NULL;
 }
 
-Directory *pre_scan_directory(const char *dir, int parentfd) {
+Directory *pre_scan_directory(const char *dir, const Directory *parent) {
     PreScan *d=NULL;
     PreScan *prev=NULL;
     Directory *result=NULL;
@@ -160,9 +157,9 @@ Directory *pre_scan_directory(const char *dir, int parentfd) {
     pthread_mutex_lock(&mut);
 
     /* Check if we already have the dir in scanlist */
-    d=pre_scan_list;
-    while(d && strcmp(d->dir,dir)!=0) {
-	prev=d;
+    for (d=pre_scan_list; d; d=d->next) {
+        if ( strcmp(d->dir,dir)==0 && d->parent == parent ) break;
+        prev=d;
 	d=d->next;
     }
 
@@ -170,11 +167,11 @@ Directory *pre_scan_directory(const char *dir, int parentfd) {
 	/* We had it in the list */
 	switch(d->state) {
 	case NOT_STARTED:
-	    /* We need the directory scan to continue, so just do it ourselves now. */
+	    /* The scanning thread has not scanned the directory, so do it ourselves */
 	    d->state=SCANNING;
 	    scans.pre_scan_misses++;
 	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(dir,parentfd);
+	    d->result=scan_directory(dir,parent);
 	    pthread_mutex_lock(&mut);
 	    break;
 	case SCANNING:
@@ -205,7 +202,7 @@ Directory *pre_scan_directory(const char *dir, int parentfd) {
     } else {
 	/* We did not have it in the list. Do the old fashion way */
 	scans.pre_scan_misses++;
-	result=scan_directory(dir,parentfd);
+	result=scan_directory(dir,parent);
     }
 
     if (result==NULL) goto out;
@@ -214,14 +211,13 @@ Directory *pre_scan_directory(const char *dir, int parentfd) {
     for(i=result->entries-1; i>=0; i--) {
 	if (S_ISDIR(result->array[i].stat.st_mode)) {
 	    /* Found a directory to prescan */
-	    size_t len=strlen(dir)+strlen(result->array[i].name)+2;	
-	    if ( (d=malloc(sizeof(PreScan)))==NULL ||
-		 (d->dir=malloc(len))==NULL ) {
-		perror("malloc");
-		exit(1);
-	    }
-	    snprintf(d->dir,len,"%s/%s",dir,result->array[i].name);
-            d->parentfd=parentfd;
+
+            if ( (d=malloc(sizeof(*d))) == NULL  || 
+                (d->dir=strdup(result->array[i].name)) == NULL ) {
+                        perror("malloc");
+                        exit(1);
+                }
+            d->parent=result;
 	    d->result=NULL;
 	    d->state=NOT_STARTED;
 	    d->next=pre_scan_list;	    
@@ -265,7 +261,7 @@ void *pre_read_loop(void *arg) {
 	    d->state=SCANNING;
 	    /* printf("pre_scanner scanning %s\n",d->dir); */
 	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(d->dir,d->parentfd);
+	    d->result=scan_directory(d->dir,d->parent);
 	    pthread_mutex_lock(&mut);
 	    d->state=READY;
 	    scans.pre_scan_dirs++;

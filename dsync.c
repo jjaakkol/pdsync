@@ -424,10 +424,10 @@ void d_freedir(Directory *dir) {
     free(dir);
 }
 
-int remove_file(const char *file) {
+int remove_file(const char *file,const Directory *to) {
     if (verbose) printf("RM: %s\n",file);
     if (!dryrun) {
-	if (unlink(file)<0) {
+	if (unlinkat(dirfd(to->handle),file,0)<0) {
 	    show_error("unlink",file);
 	    opers.write_errors++;
 	    return -1;
@@ -438,76 +438,69 @@ int remove_file(const char *file) {
 }
 
 int remove_hierarchy(
-                     char *path, 
-		     const struct stat *pathstat,
 		     const char *dir, 
-                     int parentfd,
+                     const Directory *parent,
 		     const struct stat *dirstat) {
     struct stat thisdir;
     Directory *del=NULL;
     int i;
     int skip_rmdir=0;
-    const int pathlen=strlen(path);
-    int dirfd=-1;
-
-    dirfd=openat(parentfd,dir,O_RDONLY|O_DIRECTORY);
-    if (dirfd<0 || fchdir(dirfd)<0) {
-	show_error2("chdir",path,dir);
+    int dfd=-1;
+ 
+    dfd=openat(dirfd(parent->handle),dir,O_RDONLY|O_DIRECTORY);
+    if (dfd<0 || fchdir(dfd)<0) {
+	show_error2("chdir","PATHMISSING",dir);
 	opers.write_errors++;
 	goto fail;
     }
-    {
-	char tmpbuf[MAXLEN];
-	if ( !getcwd(tmpbuf,sizeof(tmpbuf)) ) goto fail;
-	assert(strncmp(target_dir,tmpbuf,target_dir_len)==0);
+ 
+    del=scan_directory(dir,parent);
+    if (!del) {
+	show_error("readdir","PATHMISSING");
+	return -1;
     }
-    path[pathlen]='/';
-    strncpy(path+pathlen+1,dir,MAXLEN-pathlen-2);
+
     if (lstat(".",&thisdir)<0) {
-	show_error("lstat",path);
+	show_error("lstat(.)","PATHMISSING");
 	goto fail;
     }
     if (dirstat->st_dev!=thisdir.st_dev ||
 	dirstat->st_ino!=thisdir.st_ino) {
-	show_error("Removed directory changed",path);
+	show_error("Removed directory changed","PATHMISSING");
 	goto fail;
     }
     if (thisdir.st_dev==source_stat.st_dev &&
 	thisdir.st_ino==source_stat.st_ino) {
 	/* This can happen when doing something like 
 	 * dsync /tmp/foo/bar /tmp/foo */
-	show_warning("Skipping removal of source directory",path);
+	show_warning("Skipping removal of source directory","PATHMISSING");
 	goto fail;
     }
     if (thisdir.st_dev==target_stat.st_dev &&
 	thisdir.st_ino==target_stat.st_ino) {
 	/* This should only happen on badly screwed up filesystems */
-	show_warning("Skipping removal of target directory (broken filesystem?).\n",path);
+	show_warning("Skipping removal of target directory (broken filesystem?).\n","PATHMISSING");
 	goto fail;
     }
-    del=scan_directory(".",parentfd);
-    if (!del) {
-	show_error("readdir",path);
-	goto fail;
-    }
+  
     for(i=0;i<del->entries;i++) {
 	struct stat file;
 	if (lstat(del->array[i].name,&file)<0) {
-	    show_error2("lstat",path,del->array[i].name);
+	    show_error2("lstat","PATHMISSING",del->array[i].name);
 	    goto fail;
 	}
 	if (S_ISDIR(file.st_mode)) {
 	    int r;
-	    r=remove_hierarchy(path,&thisdir,del->array[i].name,parentfd,&file);	    
+	    r=remove_hierarchy(del->array[i].name,del,&file);	    
 	    if (r<0) goto fail;
 	} else {
 	    if (!dryrun && unlink(del->array[i].name)<0) {
-		show_error2("unlink",path,del->array[i].name);
+		show_error2("unlink","PATHMISSING",del->array[i].name);
 		/* FIXME: maybe continue here? */
 		goto fail;
 	    } else {
                 if (verbose) {
-		  printf("RM: %s/%s\n",path,del->array[i].name);
+		  printf("RM: %s/%s\n","PATHMISSING",del->array[i].name);
 	        }
 		opers.entries_removed++;
 	    }
@@ -515,29 +508,17 @@ int remove_hierarchy(
     }
 
  cleanup:
-    if (dirfd>=0) close(dirfd);
-    path[pathlen]='\0';
+    if (dfd>=0) close(dfd);
     if (del) d_freedir(del);
-    if (chdir("..")<0 ||
-	lstat(".",&thisdir)<0 ||
-	thisdir.st_dev!=pathstat->st_dev ||
-	thisdir.st_ino!=pathstat->st_ino) {
-	/* Try with the hopefully absolute path */
-	show_warning("Removed directory moved. Trying absolute path",path);
-	if (chdir(path)<0 ||
-	    lstat(".",&thisdir)<0 ||
-	    thisdir.st_dev!=pathstat->st_dev ||
-	    thisdir.st_ino!=pathstat->st_ino) {
-	    show_error("Will not remove changed path",path);
-	    return -1;
-	}
-	/* Using absolute path worked */
+    if (fchdir(dirfd(parent->handle))<0 ) {
+                show_error("remove_hierarchy: parent directory went away. Exiting.","PATHMISSING");
+                exit(1);
     }
     if (verbose && !skip_rmdir) {
-	printf("RD: %s/%s\n",path,dir);
+	printf("RD: %s/%s\n","PATHMISSING",dir);
     }
     if (!dryrun && !skip_rmdir && rmdir(dir)<0) {
-	show_error2("rmdir",path,dir);
+	show_error2("rmdir","PATHMISSING",dir);
 	opers.write_errors++;
     } else {
 	opers.dirs_removed++;
@@ -864,42 +845,12 @@ int create_target(const char *path,
     return -1;
 }
 
-int remove_entry(char *todir, const char *name, int parentfd, const struct stat *stat) {
-    int tolen=strlen(todir);
-    int len=strlen(name);
-
-    assert(strncmp(target_dir,todir,target_dir_len)==0);
-
-    /* Create new name */
-    if (len+tolen+2>MAXLEN) {
-	/* sanity */
-	fprintf(stderr,"remove_entry(): filename longer than MAXLEN\n");
-	opers.write_errors++;
-	return 0;
-    }
-
+/* TODO: just remove this function */
+int remove_entry(const char *name, const Directory *parent, const struct stat *stat) {
     if (S_ISDIR(stat->st_mode)) {
-	    struct stat tmp;
-	    if (chdir(todir)==0 &&
-		lstat(".",&tmp)==0 && 
-		S_ISDIR(tmp.st_mode)) {
-		remove_hierarchy(todir,&tmp,name,parentfd,stat);
-	    } else {
-		show_error2("remove directory",todir,name);
-	    }
-	    if (fchdir(parentfd)<0) {
-		/* This really should not happen, no matter what.
-		 * So I save myself the programming trouble by not providing
-		 * a graceful error mechanism */
-		fprintf(stderr,"FATAL: remove_entry: fchdir(fromdir): %s\n",strerror(errno));
-		exit(2);
-	    }
+        remove_hierarchy(name,parent,stat);
     } else {
-	/* Need to remove a plain file */
-	todir[tolen]='/';
-	strcpy(todir+tolen+1,name);
-	remove_file(todir);
-	todir[tolen]='\0';
+	remove_file(name,parent);
     }
     return 0;
 }
@@ -943,11 +894,11 @@ static int should_compress(const char *name, const struct stat *s) {
     return 1;
 }
 
-static int should_exclude(const char *name) {
+static int should_exclude(const Directory *from, const Entry *entry) {
     Exclude *e=exclude_list;
 
     while(e) {
-	if (regexec(&e->regex,name,0,NULL,0)==0) {
+	if (regexec(&e->regex,entry->name,0,NULL,0)==0) {
 	    /* Matched */
 	    return 1;
 	}
@@ -956,13 +907,11 @@ static int should_exclude(const char *name) {
     return 0;
 }
 
-int remove_old_entries(char *todir, 
-		       const Directory *from,
-		       const Directory *to,
-                       int to_parentfd) {
+/* Remove missing files and directories which exist in to but in from */
+int remove_old_entries(const Directory *from,
+		       const Directory *to) {
     int to_i=0;
 
-    /* Remove missing files and directories */
     for(to_i=0; to && to_i < to->entries; to_i++) {
 
 	if (compress && 
@@ -989,7 +938,7 @@ int remove_old_entries(char *todir,
 	if ( should_compress(to->array[to_i].name, &to->array[to_i].stat) ||
 	     directory_lookup(from,to->array[to_i].name)==NULL) {
 	    /* Entry no longer exists or should be compressed */
-	    remove_entry(todir,to->array[to_i].name,to_parentfd,&to->array[to_i].stat);
+	    remove_entry(to->array[to_i].name,to,&to->array[to_i].stat);
 	} 
 
 	if (opers.write_errors) return -1;
@@ -1144,57 +1093,48 @@ void save_link_info(const Entry *fentry, const char *path) {
     link_htable[hval]=link;
 }
     
-int dsync(char *source_dir, 
-	  const char *source_root, 
-	  char *todir, const EntryPath *parent) {
+int dsync(const Directory *from_parent, char *fromdir, 
+        const Directory *to_parent, char *todir,
+        const EntryPath *parent) {
     struct stat cdir;
     int fromfd=-1;
     int tofd=-1;
     Directory *from=NULL;
     Directory *to=NULL;
-    int tolen=strlen(todir);
-    int sourcelen=strlen(source_dir);
     int i;
     EntryPath current={parent,NULL};
     int ret=-1;
+    int tolen=strlen(todir);
 
-    fromfd=open(".",O_DIRECTORY|O_RDONLY);
-    if (fromfd<0 || fstat(fromfd,&cdir)!=0) {
-	show_error("stat",source_dir);
+    from=scan_directory(fromdir,from_parent);
+    if (from==NULL) {
+	show_error("readdir",fromdir);
 	opers.read_errors++;
 	goto fail;
+    }
+    /* FIXME: remove all chdirs */
+    if ( fchdir(dirfd(from->handle)) ) {
+        perror("fchdir");
+        exit(1);
+    }
+    if ( fstat(dirfd(from->handle),&cdir) < 0 ){
+        perror("fstat");
+        exit(1);
     }
     if (parent && 
 	(cdir.st_dev!=parent->entry->stat.st_dev || 
 	 cdir.st_ino!=parent->entry->stat.st_ino)) {
-	show_error("Directory changed",source_dir);
+	show_error("Directory changed",fromdir);
 	opers.read_errors++;
 	goto fail;
     }
-    from=scan_directory(".",fromfd);
-    if (from==NULL) {
-	show_error("readdir",source_dir);
-	opers.read_errors++;
-	goto fail;
-    }
+  
     if (from->entries>0) show_progress(parent,&from->array[0]);
-    if (atime_preserve) {
-	struct utimbuf tmp;
-	tmp.actime=cdir.st_atime;
-	tmp.modtime=cdir.st_mtime;
-	if (utime(".",&tmp)<0) {
-	    show_error("utime",source_dir);
-	    opers.read_errors++;
-	}
-    }
-
-    tofd=open(todir,O_RDONLY|O_DIRECTORY|O_NOATIME);
-    if (tofd<0) goto fail;
 
     if (pre_scan) {
-	to=pre_scan_directory(todir,tofd);
+	to=pre_scan_directory(todir,to_parent);
     } else {
-	to=scan_directory(todir,tofd);
+	to=scan_directory(todir,to_parent);
     }
     if ( delete_only && to==NULL ) {
 	if (verbose) {
@@ -1208,14 +1148,13 @@ int dsync(char *source_dir,
 	goto fail;
     }
     
-    if (delete) remove_old_entries(todir, from, to, tofd);
+    if (delete) remove_old_entries(from, to);
 
     /* Loop through the source directory entries */
     for(i=0;i<from->entries &&
 	    opers.write_errors==0
 	    ;i++) {
 	const Entry *fentry=&from->array[i];
-	const int dlen=strlen(fentry->name);
 	const Entry *tentry=NULL;
 	int do_compress=0;
 
@@ -1223,32 +1162,9 @@ int dsync(char *source_dir,
 	show_progress(parent,fentry);
 	    
 	/* Check if this entry should be excluded */
-	if (exclude_list) {
-	    if (S_ISDIR(fentry->stat.st_mode)) {
-		snprintf(source_dir+sourcelen,MAXLEN-sourcelen,
-			 "/%s/",fentry->name);
-	    } else {
-		snprintf(source_dir+sourcelen,MAXLEN-sourcelen,
-			 "/%s",fentry->name);
-	    }
-	    if (should_exclude(source_root)) {
-		/* Entry is excluded */
-		if (verbose>1) {
-		    printf("EX: %s\n",source_root);
-		}
-		source_dir[sourcelen]='\0';
-		continue;
-	    }
-	    source_dir[sourcelen]=0;
-	}
-
-	/* sanity check */
-	if (dlen+tolen+strlen(suffix)+16>MAXLEN) {
-	    /* sanity */
-	    fprintf(stderr,"Target path length > MAXLEN. Skipping it.");
-	    opers.read_errors++;
-	    continue;
-	}
+	if (should_exclude(from,fentry)) {
+                continue;
+        }
 
 	/* Check if we should create compressed target */
         do_compress=should_compress(fentry->name,&fentry->stat);
@@ -1281,7 +1197,7 @@ int dsync(char *source_dir,
 		    if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			/* Entry exists, but it is OK to remove it */
 			todir[tolen]='\0';
-			remove_entry(todir,tentry->name,tofd,&tentry->stat);
+			remove_entry(tentry->name,to,&tentry->stat);
 			todir[tolen]='/';
 		    } else {
 			show_warning("Directory is in the way. Consider --delete",todir);
@@ -1314,7 +1230,7 @@ int dsync(char *source_dir,
 		}
 	    }
 
-	    if (create_target(source_dir,todir,fentry,do_compress)<0) {
+	    if (create_target(".",todir,fentry,do_compress)<0) {
 		/* Failed to create new entry */
 		continue;
 	    }
@@ -1351,41 +1267,15 @@ int dsync(char *source_dir,
 	    if (verbose) printf("SD: %s\n",todir);
 	
 	} else if (S_ISDIR(fentry->stat.st_mode)) {
-	    struct stat tmp;	    
 	    /* All checks turned out green: we recurse into a subdirectory */
 
-	    snprintf(source_dir+sourcelen,MAXLEN-sourcelen,"/%s",
-		     fentry->name);
-
-	    /* Change to subdirectory */
-	    if (chdir(fentry->name)<0) {
-		show_error("chdir",source_dir);
-		source_dir[sourcelen]='\0';
-		opers.read_errors++;
-		continue;
-	    }
-
-	    /* Recursion */
 	    current.entry=fentry;
-	    dsync(source_dir,source_root,todir,&current);
-	    source_dir[sourcelen]='\0';
+	    dsync(from,fentry->name,to,todir,&current);
+            if ( fchdir(dirfd(from->handle)) ) {
+                perror("fchdir");
+                exit(1);
+            }
 	    
-	    /* Return back to current directory 
-	     * and check that we really got back to where we came from. */
-	    if (chdir("..")<0 || 
-		stat(".",&tmp)<0 ||
-		tmp.st_dev!=cdir.st_dev ||
-		tmp.st_ino!=cdir.st_ino) {
-		show_warning("Current directory moved",source_dir);
-		if (chdir(source_dir)<0 ||
-		    stat(".",&tmp)<0 ||
-		    tmp.st_dev!=cdir.st_dev ||
-		    tmp.st_ino!=cdir.st_ino) {
-		    show_error("Directory changed",source_dir);
-		    opers.read_errors++;
-		    goto fail;
-		}
-	    }
 	}
 
 	/* Set the inode bits */
@@ -1503,21 +1393,10 @@ int main(int argc, char *argv[]) {
     }
     target_dir_len=strlen(target_dir);
 
-    dsync(s_frompath,s_frompath+strlen(s_frompath),s_topath,NULL);
+    dsync(NULL, s_frompath, NULL, s_topath, NULL);
 
     if (opers.no_space && !delete_only) {
-	if (delete) {
-	    opers.write_errors=0;
-	    delete_only=1;
-	    show_warning("File system full. Trying --delete-only.",NULL);
-	    dsync(s_frompath,s_frompath+strlen(s_frompath),s_topath,NULL);
-	    delete_only=0;
-	    if (opers.write_errors==0) {
-		dsync(s_frompath,s_frompath+strlen(s_frompath),s_topath,NULL);
-	    }
-	} else {
-	    show_warning("Out of space. Consider --delete.",NULL);
-	}
+	show_warning("Out of space. Consider --delete.",NULL);
     }
     if (opers.write_errors) {
 	fprintf(stderr,"dsync was canceled because of write errors.\n");
