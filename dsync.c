@@ -397,38 +397,20 @@ void d_freedir(Directory *dir) {
     free(dir);
 }
 
-int remove_hierarchy(
-		     const char *dir, 
-                     Directory *parent,
-		     const struct stat *dirstat) {
+int remove_hierarchy(const char *dir, Directory *parent) {
     struct stat thisdir;
     Directory *del=NULL;
     int i;
     int skip_rmdir=0;
     int dfd=-1;
  
-    dfd=openat(dirfd(parent->handle),dir,O_RDONLY|O_DIRECTORY);
-    if (dfd<0 || fchdir(dfd)<0) {
-	show_error2("chdir","PATHMISSING",dir);
-	opers.write_errors++;
-	goto fail;
-    }
- 
-    del=scan_directory(dir,parent);
+    del=pre_scan_directory(dir,parent);
     if (!del) {
-	show_error("readdir","PATHMISSING");
+	show_error("remove directory","PATHMISSING");
 	return -1;
     }
-
-    if (lstat(".",&thisdir)<0) {
-	show_error("lstat(.)","PATHMISSING");
-	goto fail;
-    }
-    if (dirstat->st_dev!=thisdir.st_dev ||
-	dirstat->st_ino!=thisdir.st_ino) {
-	show_error("Removed directory changed","PATHMISSING");
-	goto fail;
-    }
+    dfd=dirfd(del->handle);
+    fstat(dfd,&thisdir);
     if (thisdir.st_dev==source_stat.st_dev &&
 	thisdir.st_ino==source_stat.st_ino) {
 	/* This can happen when doing something like 
@@ -445,17 +427,17 @@ int remove_hierarchy(
   
     for(i=0;i<del->entries;i++) {
 	struct stat file;
-	if (lstat(del->array[i].name,&file)<0) {
-	    show_error2("lstat","PATHMISSING",del->array[i].name);
+	if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
+	    show_error2("fstatat","PATHMISSING",del->array[i].name);
 	    goto fail;
 	}
 	if (S_ISDIR(file.st_mode)) {
 	    int r;
-	    r=remove_hierarchy(del->array[i].name,del,&file);	    
+	    r=remove_hierarchy(del->array[i].name,del);
 	    if (r<0) goto fail;
 	} else {
-	    if (!dryrun && unlink(del->array[i].name)<0) {
-		show_error2("unlink","PATHMISSING",del->array[i].name);
+	    if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
+		show_error2("unlinkat","PATHMISSING",del->array[i].name);
 		/* FIXME: maybe continue here? */
 		goto fail;
 	    } else {
@@ -468,18 +450,14 @@ int remove_hierarchy(
     }
 
  cleanup:
-    if (dfd>=0) close(dfd);
     if (del) d_freedir(del);
-    if (fchdir(dirfd(parent->handle))<0 ) {
-                show_error("remove_hierarchy: parent directory went away. Exiting.","PATHMISSING");
-                exit(1);
-    }
     if (verbose && !skip_rmdir) {
 	printf("RD: %s/%s\n","PATHMISSING",dir);
     }
-    if (!dryrun && !skip_rmdir && rmdir(dir)<0) {
+    if (!dryrun && !skip_rmdir && unlinkat(dirfd(parent->handle),dir,AT_REMOVEDIR)<0) {
 	show_error2("rmdir","PATHMISSING",dir);
 	opers.write_errors++;
+        return -1;
     } else {
 	opers.dirs_removed++;
     }
@@ -753,7 +731,7 @@ int create_target(const char *path,
 /* Remove one entry from a directory */
 int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
         if (S_ISDIR(stat->st_mode)) {
-                remove_hierarchy(name,parent,stat);
+                remove_hierarchy(name,parent);
         } else {
                 if (verbose) printf("RM: %s\n",name);
                 if (!dryrun && unlinkat(dirfd(parent->handle),name,0)) {
