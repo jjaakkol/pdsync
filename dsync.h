@@ -20,6 +20,7 @@
 #include <time.h>
 #include <dirent.h>
 #include <sys/sendfile.h>
+#include <sys/time.h>
 #ifdef HAVE_PTHREAD
 #include <pthread.h>
 #endif

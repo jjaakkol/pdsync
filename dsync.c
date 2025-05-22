@@ -215,23 +215,29 @@ static int write_path(FILE *f, const EntryPath *path, const Entry *current) {
 }
 
 /* Shows the progress, obeying privacy options */
-static void show_progress(const EntryPath *path, const Entry *current) {
-    static time_t last=0;
+static void show_progress(const char *str) {
     static int last_scanned=0;
-    time_t now;
+    static long long last_bytes;
+    static long long last=0;
+    struct timeval tv;
 
     if (!progress) return;
 
     /* Once a second */    
-    time(&now);
-    if (last==now) return;
+    gettimeofday(&tv,NULL);
+    long long now=tv.tv_sec*1000000 + tv.tv_usec;
+    if (now-last < 1000000) return;
 
-    last=now;
-    fprintf(tty_stream,"PG: %7d (%d files/s) ",scans.entries_scanned,
-        scans.entries_scanned-last_scanned);
+    fprintf(tty_stream,"PG: %7d files, %lld files/s, %lld MiB, %lld MiB/s : %s\n",
+        scans.entries_scanned,
+        1000000LL * (scans.entries_scanned-last_scanned) / (now-last),
+        opers.bytes_copied / (1024*1024),
+        1000000LL * (opers.bytes_copied-last_bytes) / (now-last) / (1024*1024),
+        str
+    );
     last_scanned=scans.entries_scanned;
-    write_path(tty_stream,path,current);
-    fprintf(tty_stream,"\n");
+    last_bytes=opers.bytes_copied;
+    last=now;
 }
 
 	
@@ -670,6 +676,7 @@ int copy_regular(const char *path,
         int w=0;
         while( (w=sendfile(tofd,fromfd,&offset,sizeof(buf))) >0) {
                 opers.bytes_copied+=w;
+                show_progress("Copying a file.");
         }
 	if (w<0) {
 		show_error("write",to);
@@ -840,7 +847,7 @@ int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
     } else {
         if (verbose) printf("RM: %s\n",name);
         if (!dryrun) {
-	        if ( unlinkat(dirfd(parent->handle),name,AT_SYMLINK_NOFOLLOW)) {
+	        if ( unlinkat(dirfd(parent->handle),name,0)) {
 	        show_error("unlink",name);
 	        opers.write_errors++;
 	        return -1;
@@ -1126,7 +1133,7 @@ int dsync(Directory *from_parent, char *fromdir,
 	goto fail;
     }
   
-    if (from->entries>0) show_progress(parent,&from->array[0]);
+    if (from->entries>0) show_progress("Scanning a directory.");
 
     if (pre_scan) {
 	to=pre_scan_directory(todir,to_parent);
@@ -1156,7 +1163,7 @@ int dsync(Directory *from_parent, char *fromdir,
 	int do_compress=0;
 
 	/* Progress output? */
-	show_progress(parent,fentry);
+	show_progress(todir);
 	    
 	/* Check if this entry should be excluded */
 	if (should_exclude(from,fentry)) {
@@ -1351,12 +1358,9 @@ int main(int argc, char *argv[]) {
 
     /* Check the options */
     parse_options(argc, argv);
-    if (geteuid()==0) {
-	if (!quiet) {
-	    printf("dsync in safe mode\n");
-	}
-	umask(077);
-	safe_mode=1;
+ 
+    if (safe_mode && !quiet) {
+        printf("Running in in slower safe mode: removing access to users before updating targets.\n");
     }
     myuid=getuid();
     if (argc-optind!=2) {
