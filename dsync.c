@@ -86,6 +86,7 @@ typedef struct {
     int read_errors;
     int write_errors;
     int no_space;
+    int chown;
 } Opers; 
 Opers opers;
 Scans scans;
@@ -675,7 +676,6 @@ int copy_regular(const char *path,
 	
     } else {
 	/* Simple loop with no regard to filesystem block size or sparse blocks*/
-	/* FIXME: support larger writes and avoid block boundaries to avoid write amplification */
         char buf[1024*1024];
         off_t offset=0;
         int w=0;
@@ -1277,18 +1277,25 @@ int dsync(Directory *from_parent, char *fromdir,
 	    
 	}
 
-	/* Set the inode bits */
+	/* Check if we need to update the inode bits */
 	if (!dryrun && !delete_only) {
-	    if (preserve_owner || preserve_group) {
+
+                /* UID and GID */
                 uid_t uid=-1;
                 gid_t gid=-1;
-		if (preserve_group) gid=fentry->stat.st_gid;
-		if (preserve_owner) uid=fentry->stat.st_uid;
-		if (lchown(todir, uid, gid)<0) {
-		    show_error("lchown",todir);
-		    opers.write_errors++;
+                if (preserve_owner && (tentry==NULL || tentry->stat.st_uid != fentry->stat.st_uid) ) {
+                        uid=fentry->stat.st_uid;
+                }
+                if (preserve_group && (tentry==NULL || tentry->stat.st_gid != fentry->stat.st_gid) ) {
+                        gid=fentry->stat.st_gid;
+                }
+                if (uid!=-1 || gid!=-1) {
+		        if ( fchownat(dirfd(to->handle),fentry->name, uid, gid,AT_SYMLINK_NOFOLLOW)<0 ) {
+		                show_error("lchown",todir);
+		                opers.write_errors++;
+                        } else opers.chown++;
 		}
-	    }
+
 	    if (preserve_permissions && 
 		!S_ISLNK(fentry->stat.st_mode) &&
 		chmod(todir,fentry->stat.st_mode)<0) {
