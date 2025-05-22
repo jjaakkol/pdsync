@@ -87,6 +87,8 @@ typedef struct {
     int write_errors;
     int no_space;
     int chown;
+    int chmod;
+    int times;
 } Opers; 
 Opers opers;
 Scans scans;
@@ -131,7 +133,7 @@ static struct option options[]= {
     { "compress",        0, NULL, 'z' },
     { "compressor",      1, NULL, 'Z' },
     { "compress-suffix", 1, NULL, 'F' },
-    { "atime-preserve",  0, NULL, ATIME_PRESERVE },
+    { "atimes",          0, NULL, ATIME_PRESERVE },
     { "privacy",         0, NULL, PRIVACY },
     { "delete-only",     0, NULL, DELETE_ONLY },
     { "pre-scan",        0, NULL, PRE_SCAN },
@@ -1296,21 +1298,41 @@ int dsync(Directory *from_parent, char *fromdir,
                         } else opers.chown++;
 		}
 
-	    if (preserve_permissions && 
-		!S_ISLNK(fentry->stat.st_mode) &&
-		chmod(todir,fentry->stat.st_mode)<0) {
-		/* chmod failed */
-		show_error("chmod",todir);
-		opers.write_errors++;
-	    }
-	    if (preserve_time && !S_ISLNK(fentry->stat.st_mode)) {
-		struct utimbuf tmp;
-		tmp.actime=fentry->stat.st_atime;
-		tmp.modtime=fentry->stat.st_mtime;
-		if (utime(todir,&tmp)<0) {
-		    show_error("utime",todir);
-		    opers.write_errors++;
-		}
+                // Permissions 
+	        if (preserve_permissions && 
+		        !S_ISLNK(fentry->stat.st_mode) &&
+                        (!tentry || fentry->stat.st_mode!=tentry->stat.st_mode) ) {
+		        if (chmod(todir,fentry->stat.st_mode)<0) {
+		                show_error("chmod",todir);
+		                opers.write_errors++;
+                        } else opers.chmod++;
+	        }
+
+	    if ( (preserve_time || atime_preserve) && !S_ISLNK(fentry->stat.st_mode)) {
+		struct timespec tmp[2] = {
+                        { .tv_sec=0, .tv_nsec=UTIME_NOW },
+                        { .tv_sec=0, .tv_nsec=UTIME_NOW }
+                };
+                if (tentry) {
+                        tmp[0]=tentry->stat.st_atim;
+                        tmp[1]=tentry->stat.st_mtim;
+                }
+                if (atime_preserve) tmp[0]=fentry->stat.st_atim;
+                if (preserve_time) tmp[1]=fentry->stat.st_mtim;
+                if (atime_preserve||preserve_time) {
+                        if (tentry && 
+                                tentry->stat.st_atim.tv_sec == tmp[0].tv_sec &&
+                                tentry->stat.st_atim.tv_nsec == tmp[0].tv_nsec &&
+                                tentry->stat.st_mtim.tv_sec == tmp[1].tv_sec &&
+                                tentry->stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
+                        ) {
+                                /* skip, times were right */
+                        } else if (utimensat(dirfd(to->handle),fentry->name,tmp,AT_SYMLINK_NOFOLLOW)<0) {
+                                show_error("utimensat",todir);
+                                opers.write_errors++;
+                        } else opers.times++;
+                }
+
 	    }
 	}
     }
