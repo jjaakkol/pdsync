@@ -7,7 +7,7 @@ typedef enum {
 } ScanState;
 
 typedef struct PreScanStruct {
-    const Directory *parent;
+    Directory *parent;
     char *dir;
     ScanState state;
     Directory *result;
@@ -27,7 +27,7 @@ static int my_strcmp(const void *x, const void *y) {
 
 /* NOTE: if --pre-scan is used, scan_directory may be called 
  *       from different threads */
-Directory *scan_directory(const char *name, const Directory *parent) {
+Directory *scan_directory(const char *name, Directory *parent) {
     DIR *d=NULL;
     int dfd=-1;
     Directory *nd=NULL;
@@ -36,6 +36,9 @@ Directory *scan_directory(const char *name, const Directory *parent) {
     int allocated=16;
     int entries=0;
     char **names=NULL;
+
+    /* Assume that the parent has not freed yet by other threads. */
+    assert(!parent || parent->magick==0xDADDAD);
 
      /* TODO: should the O_NOATIME be a flag*/
     dfd=openat( (parent) ? dirfd(parent->handle) : AT_FDCWD , name, O_NOFOLLOW|O_RDONLY|O_DIRECTORY);
@@ -85,9 +88,8 @@ Directory *scan_directory(const char *name, const Directory *parent) {
     /* Sort the directory entries */
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
 
-    nd->array=malloc(sizeof(Entry)*entries);
+    nd->array=calloc(entries,sizeof(Entry));
     if (!nd->array) goto fail;
-    memset(nd->array,0,sizeof(Entry)*entries);
     nd->entries=entries;
 
     /* Stat all entries */
@@ -126,6 +128,7 @@ Directory *scan_directory(const char *name, const Directory *parent) {
     free(names);
     scans.dirs_scanned++;
 
+    nd->magick=0xDADDAD;
     return nd;
 
     fail:
@@ -147,20 +150,28 @@ Directory *scan_directory(const char *name, const Directory *parent) {
     return NULL;
 }
 
-Directory *pre_scan_directory(const char *dir, const Directory *parent) {
+Directory *pre_scan_directory(const char *path, Directory *parent) {
     PreScan *d=NULL;
     PreScan *prev=NULL;
     Directory *result=NULL;
+    const char *basename=NULL;
     int i;
 
     /* Lock the list */
     pthread_mutex_lock(&mut);
 
+    /* The prescanner only knows the parent and the last compotent of the dir name */
+    basename=path;
+    for (i=0; path[i]; i++) {
+        if (path[i]=='/') basename=path+i+1;
+    }
+    assert(basename[0]!='\0' && basename[0]!='/');
+
     /* Check if we already have the dir in scanlist */
     for (d=pre_scan_list; d; d=d->next) {
-        if ( strcmp(d->dir,dir)==0 && d->parent == parent ) break;
+        // printf("pre_scan %s %s\n",dir,d->dir);
+        if ( d->parent==parent && strcmp(d->dir,basename)==0 ) break;
         prev=d;
-	d=d->next;
     }
 
     if (d) {
@@ -170,8 +181,8 @@ Directory *pre_scan_directory(const char *dir, const Directory *parent) {
 	    /* The scanning thread has not scanned the directory, so do it ourselves */
 	    d->state=SCANNING;
 	    scans.pre_scan_misses++;
-	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(dir,parent);
+            pthread_mutex_unlock(&mut);
+	    d->result=scan_directory(path,parent);
 	    pthread_mutex_lock(&mut);
 	    break;
 	case SCANNING:
@@ -202,7 +213,7 @@ Directory *pre_scan_directory(const char *dir, const Directory *parent) {
     } else {
 	/* We did not have it in the list. Do the old fashion way */
 	scans.pre_scan_misses++;
-	result=scan_directory(dir,parent);
+	result=scan_directory(path,parent);
     }
 
     if (result==NULL) goto out;

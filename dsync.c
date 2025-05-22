@@ -412,15 +412,16 @@ static void print_opers(const Opers *stats) {
 }
 
 void d_freedir(Directory *dir) {
-    assert(dir->entries>=0);
-    if (dir->handle) closedir(dir->handle);
+    assert(dir->magick==0xDADDAD);
+    dir->magick=0xDADDEAD;
+    if (dir->handle>=0) closedir(dir->handle);
     while(dir->entries>0) {
 	dir->entries--;
 	free(dir->array[dir->entries].name);
 	if (dir->array[dir->entries].link) free(dir->array[dir->entries].link);
     }
     free(dir->array);
-    dir->entries=-1;
+    dir->entries=-123; /* Magic value to debug a race */
     free(dir);
 }
 
@@ -439,7 +440,7 @@ int remove_file(const char *file,const Directory *to) {
 
 int remove_hierarchy(
 		     const char *dir, 
-                     const Directory *parent,
+                     Directory *parent,
 		     const struct stat *dirstat) {
     struct stat thisdir;
     Directory *del=NULL;
@@ -846,7 +847,7 @@ int create_target(const char *path,
 }
 
 /* TODO: just remove this function */
-int remove_entry(const char *name, const Directory *parent, const struct stat *stat) {
+int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
     if (S_ISDIR(stat->st_mode)) {
         remove_hierarchy(name,parent,stat);
     } else {
@@ -908,8 +909,8 @@ static int should_exclude(const Directory *from, const Entry *entry) {
 }
 
 /* Remove missing files and directories which exist in to but in from */
-int remove_old_entries(const Directory *from,
-		       const Directory *to) {
+int remove_old_entries(Directory *from,
+		       Directory *to) {
     int to_i=0;
 
     for(to_i=0; to && to_i < to->entries; to_i++) {
@@ -1093,8 +1094,8 @@ void save_link_info(const Entry *fentry, const char *path) {
     link_htable[hval]=link;
 }
     
-int dsync(const Directory *from_parent, char *fromdir, 
-        const Directory *to_parent, char *todir,
+int dsync(Directory *from_parent, char *fromdir, 
+        Directory *to_parent, char *todir,
         const EntryPath *parent) {
     struct stat cdir;
     int fromfd=-1;
