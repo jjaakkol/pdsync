@@ -752,20 +752,17 @@ int create_target(const char *path,
 
 /* Remove one entry from a directory */
 int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
-    if (S_ISDIR(stat->st_mode)) {
-        remove_hierarchy(name,parent,stat);
-    } else {
-        if (verbose) printf("RM: %s\n",name);
-        if (!dryrun) {
-	        if ( unlinkat(dirfd(parent->handle),name,0)) {
-	        show_error("unlink",name);
-	        opers.write_errors++;
-	        return -1;
-	}
-    }
-    opers.entries_removed++;
-    return 0;
-}
+        if (S_ISDIR(stat->st_mode)) {
+                remove_hierarchy(name,parent,stat);
+        } else {
+                if (verbose) printf("RM: %s\n",name);
+                if (!dryrun && unlinkat(dirfd(parent->handle),name,0)) {
+                        show_error("unlink",name);
+	                opers.write_errors++;
+	                return -1;
+	        }
+                opers.entries_removed++;
+        }
     return 0;
 }
 
