@@ -26,7 +26,6 @@ static int recursive=0;
 static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
-static int compress=0;
 static int privacy=0;
 static int progress=0;
 static int pre_scan=0;
@@ -34,17 +33,8 @@ uid_t myuid=0;
 
 FILE *tty_stream=NULL; /* For --progress */
 
-static const char *suffix=".dgz";
-static const char *compressor="/bin/gzip";
 size_t target_dir_len=1024, source_dir_len=1024;
 static const char *target_dir=NULL;
-
-static char *dont_compress=("(\\.gz|\\.tgz|\\.z|\\.lzh|\\.arj|\\.zip|"
-			    "\\.bz|\\.bz2|\\.tbz2|\\.tbz|"
-			    "\\.rpm|\\.deb|"
-			    "\\.gif|\\.png|\\.jpg|\\.jpeg|"
-			    "\\.mp3|\\.mpg|\\.mpeg|\\.avi)$");
-regex_t dont_compress_regex;
 
 typedef struct ExcludeStruct {
     regex_t regex;
@@ -71,13 +61,10 @@ typedef struct EntryPathStruct {
 typedef struct {
     int dirs_created;
     int files_copied;
-    int files_compressed;
     int entries_removed;
     int dirs_removed;
     long long bytes_copied;
     long long sparse_bytes;
-    long long bytes_compressed_in;
-    long long bytes_compressed_out;
     int symlinks_created;
     int sockets_created;
     int fifos_created;
@@ -130,9 +117,6 @@ static struct option options[]= {
     { "sparse",          0, NULL, 'S' },
     { "hard-links",      0, NULL, 'H' },
     { "exclude-regex",   1, NULL, 'X' },
-    { "compress",        0, NULL, 'z' },
-    { "compressor",      1, NULL, 'Z' },
-    { "compress-suffix", 1, NULL, 'F' },
     { "atimes",          0, NULL, ATIME_PRESERVE },
     { "privacy",         0, NULL, PRIVACY },
     { "delete-only",     0, NULL, DELETE_ONLY },
@@ -281,7 +265,6 @@ static int parse_options(int argc, char *argv[]) {
 	case 'U': update_all=1; break;
 	case 'S': preserve_sparse=1; break;
 	case 'H': preserve_hard_links=1; break;
-	case 'z': compress=1; break;
 	case ATIME_PRESERVE: atime_preserve=1; break;
 	case PRIVACY: privacy=1; break;
 	case DELETE_ONLY: delete=1; delete_only=1; break;
@@ -316,8 +299,6 @@ static int parse_options(int argc, char *argv[]) {
 	    }
 	    break;
 	}
-	case 'Z': compressor=optarg; break;
-	case 'F': suffix=optarg; break;
 
 	default:
 	    fprintf(stderr,"Unknown option '%c'.\n",opt);
@@ -373,24 +354,10 @@ static void print_opers(const Opers *stats) {
     if (stats->files_copied) {
 	printf("%8d files copied\n",stats->files_copied);
     }
-    if (stats->files_compressed) {
-	printf("%8d files compressed\n",stats->files_compressed);
-    }
     if (stats->bytes_copied>100*1024*1024) {
 	printf("%8Ld MB data copied\n",stats->bytes_copied/1024/1024);
     } else if (stats->bytes_copied) {
 	printf("%8Ld KB data copied\n",stats->bytes_copied/1024);
-    }
-    if (stats->bytes_compressed_in>100*1024*1024) {
-	printf("%8Ld MB data compressed to %Ld MB (%Ld%%)\n",
-	       stats->bytes_compressed_in/1024/1024,
-	       stats->bytes_compressed_out/1024/1024,
-	       stats->bytes_compressed_out/(stats->bytes_compressed_in/100));
-    } else if (stats->bytes_compressed_in) {
-	printf("%8Ld KB data compressed to %Ld KB (%Ld%%)\n",
-	       stats->bytes_compressed_in/1024,
-	       stats->bytes_compressed_out/1024,
-	       stats->bytes_compressed_out/(stats->bytes_compressed_in/100));
     }
     if (stats->sparse_bytes>100*1024*1024) {
 	printf("%8Ld MB in sparse blocks\n",stats->sparse_bytes/1024/1024);
@@ -531,8 +498,7 @@ int remove_hierarchy(
 int copy_regular(const char *path,
 		 const char *from, 
 		 const struct stat *s,
-		 const char *to,
-		 int do_compress) { 
+		 const char *to) {
     int fromfd=-1;
     int tofd=-1;
     struct stat from_stat;
@@ -542,22 +508,12 @@ int copy_regular(const char *path,
 
 
     if (verbose) {
-	if (do_compress) {
-	    printf("CZ: %s\n",to);
-	} else {
-	    printf("CP: %s\n",to);
-	}
+        printf("CP: %s\n",to);
     }
 
     if (dryrun) {
-	if (do_compress) {
-	    opers.files_compressed++;
-	    opers.bytes_compressed_in+=s->st_size;
-	    opers.bytes_compressed_out+=s->st_size;
-	} else {
-	    opers.files_copied++;
-	    opers.bytes_copied+=s->st_size;
-	}
+        opers.files_copied++;
+	opers.bytes_copied+=s->st_size;
 	return 0;
     }
 
@@ -576,7 +532,7 @@ int copy_regular(const char *path,
     /* Check for sparse file */
     if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
 	static int sparse_warned=0;
-	if (!sparse_warned && !do_compress && !preserve_sparse) {
+	if (!sparse_warned && !preserve_sparse) {
 	    show_warning("Sparse or compressed files detected. Consider --sparse option",from);
             sparse_warned++;
 	}
@@ -589,48 +545,8 @@ int copy_regular(const char *path,
 	opers.write_errors++;
 	goto fail;
     }
-    
-    if (do_compress) {
-	/* Copy by compressing */
-	pid_t pid=fork();
-	int status;
-	struct stat tmp2;
-	if (pid<0) {
-	    perror("fork");
-	    opers.write_errors++;
-	    goto fail;
-	}
-	if (pid==0) {
-	    /* Child */
-	    dup2(fromfd,0);
-	    dup2(tofd,1);
-	    execl(compressor,compressor,NULL);
-	    fprintf(stderr,"execl(%s): %s\n",compressor,strerror(errno));
-	    exit(127);
-	}
-	if (waitpid(pid,&status,0)<0) {
-	    perror("waitpid");
-	    opers.write_errors++;
-	    goto fail;
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status)!=0) {
-	    if (!WIFEXITED(status)) {
-		fprintf(stderr,"Compress process got killed.\n");
-	    } else {
-		fprintf(stderr,"Compress process exited with status %d\n",
-			WEXITSTATUS(status));
-	    }
-	    opers.write_errors++;
-	    goto fail;
-	}
-	opers.files_compressed++;
-	if (fstat(tofd,&tmp2)==0) {
-	    opers.bytes_compressed_in+=from_stat.st_size;
-	    opers.bytes_compressed_out+=tmp2.st_size;
-	}
-	goto end;
 	    
-    } else if (sparse_copy) {
+    if (sparse_copy) {
 	/* Copy loop which handles sparse blocks */
 	char *spbuf=NULL;
 	int bsize=4096; // 4096 is the default size of many fs blocks
@@ -724,12 +640,10 @@ int copy_regular(const char *path,
 
 int create_target(const char *path,
 		  const char *todir, 
-		  const Entry *fentry,
-		  int do_compress) {
+		  const Entry *fentry) {
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
-	if (copy_regular(path,fentry->name,&fentry->stat,todir,
-			 do_compress)<0) {
+	if (copy_regular(path,fentry->name,&fentry->stat,todir)<0) {
 	    /* Copy failed */
 	    return -1;
 	}
@@ -876,28 +790,6 @@ const Entry *directory_lookup(const Directory *d, const char *name) {
     return NULL;    
 }
 
-static int has_suffix(const char *name) {
-    int slen=strlen(suffix);
-    int l=strlen(name);
-    if ( l<=slen ) return 0;
-    if (strcmp(name+l-slen,suffix)==0) return 1;
-    return 0;    
-}
-
-static int should_compress(const char *name, const struct stat *s) {
-    /* Compress only regular files */
-    if (!compress || !S_ISREG(s->st_mode)) {
-	return 0;
-    }
-    if (regexec(&dont_compress_regex,name,0,NULL,0)==0) {
-	/* Matched */
-	/* fprintf(stderr,"%s matched\n",name); */
-	return 0;
-    }
-    /* fprintf(stderr,"%s did not match\n",name); */
-    return 1;
-}
-
 static int should_exclude(const Directory *from, const Entry *entry) {
     Exclude *e=exclude_list;
 
@@ -917,31 +809,9 @@ int remove_old_entries(Directory *from,
     int to_i=0;
 
     for(to_i=0; to && to_i < to->entries; to_i++) {
-
-	if (compress && 
-	    has_suffix(to->array[to_i].name) &&
-	    S_ISREG(to->array[to_i].stat.st_mode)) {
-	    /* Special handling for files having the compress suffix (.gz)
-	     * when compression is turned on */
-	    /* HACK: since we can modify the to name we can do this */
-	    char *toname=to->array[to_i].name;
-	    int savedpos=strlen(toname)-strlen(suffix);
-	    char savedch=toname[savedpos];
-	    const Entry *entry;
-
-	    toname[savedpos]='\0';
-	    if ( (entry=directory_lookup(from,toname)) &&
-		 should_compress(entry->name,&entry->stat)) {
-		/* Original of compressed file still exists */
-		toname[savedpos]=savedch;
-		continue;
-	    }
-	    toname[savedpos]=savedch;
-	}
 	
-	if ( should_compress(to->array[to_i].name, &to->array[to_i].stat) ||
-	     directory_lookup(from,to->array[to_i].name)==NULL) {
-	    /* Entry no longer exists or should be compressed */
+	if ( directory_lookup(from,to->array[to_i].name)==NULL) {
+	    /* Entry no longer exists in from and should be removed if --delete is in effect */
 	    remove_entry(to->array[to_i].name,to,&to->array[to_i].stat);
 	} 
 
@@ -978,7 +848,7 @@ int entry_changed(const Entry *from, const Entry *to) {
     }
 	
     if (S_ISDIR(from->stat.st_mode)) {
-	/* Directories will be always done */
+	/* Directories will be always handled */
 	return 1;
     }
 
@@ -997,13 +867,19 @@ int entry_changed(const Entry *from, const Entry *to) {
 	return 1;
     }
 
-    /*FIXME: probably should use should_compress() */
-    if ((compress || from->stat.st_size==to->stat.st_size) &&
-	from->stat.st_mtime<=to->stat.st_mtime) {
-	/* mtime has not changed and files have equal size (except that
-	 * when compressing size cannot be checked)
-	 * Need to do nothing. */
-	return 0;
+    /* If size is different we need to copy the file */
+    if (from->stat.st_size!=to->stat.st_size) {
+        return 1;
+    }
+
+    /* If from is newer by mtime it has changed. Fixme: handle nanosecond timestamps. We already copy them. */
+    if (from->stat.st_mtime>to->stat.st_mtime) {
+	return 1;
+    }
+
+    /* Regular file and we have found no reason to copy it.*/
+    if (S_ISREG(from->stat.st_mode) && S_ISREG(to->stat.st_mode)) {
+        return 0;
     }
 
     /* With symlinks we cannot just compare modification times:
@@ -1012,17 +888,10 @@ int entry_changed(const Entry *from, const Entry *to) {
     if (S_ISLNK(from->stat.st_mode) && 
 	S_ISLNK(to->stat.st_mode) &&
 	strcmp(from->link,to->link)==0) {
-	/* Symlinks point to same place */
+	/* Symlinks do not match */
 	return 0;
     }
     
-    if (should_compress(from->name,&from->stat) &&
-	from->stat.st_mtime<=to->stat.st_mtime) {
-	/* File is compressed and mtime is OK. With compressed files size
-	 * cannot be checked */
-	return 0;
-    }
-
     /* fprintf(stderr,"Just different: %s %s\n",from->name,to->name); */
 
     /* entries we're different */
@@ -1160,7 +1029,6 @@ int dsync(Directory *from_parent, char *fromdir,
 	    ;i++) {
 	const Entry *fentry=&from->array[i];
 	const Entry *tentry=NULL;
-	int do_compress=0;
 
 	/* Progress output? */
 	show_progress(todir);
@@ -1170,22 +1038,7 @@ int dsync(Directory *from_parent, char *fromdir,
                 continue;
         }
 
-	/* Check if we should create compressed target */
-        do_compress=should_compress(fentry->name,&fentry->stat);
-
-	/* Generate the target name */
-	if (do_compress) {
-	    /* Add the suffix to compressed file name */
-	    snprintf(todir+tolen,MAXLEN-tolen,"/%s%s",fentry->name,suffix);
-	    if (directory_lookup(from,todir+tolen+1)) {
-		show_warning("Compressed file and compressed target both exist",
-			     todir);
-		do_compress=0;
-		snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
-	    }
-	} else {
-	    snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
-	}
+	snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
 	
 	assert(strncmp(target_dir,todir,target_dir_len)==0);
 
@@ -1234,7 +1087,7 @@ int dsync(Directory *from_parent, char *fromdir,
 		}
 	    }
 
-	    if (create_target(".",todir,fentry,do_compress)<0) {
+	    if (create_target(".",todir,fentry)<0) {
 		/* Failed to create new entry */
 		continue;
 	    }
@@ -1376,17 +1229,6 @@ int main(int argc, char *argv[]) {
 	    exit(2);
 	}
 	memset(link_htable,0,sizeof(Link *)*hash_size);
-    }
-
-    if (compress) {
-	int error;
-	if ((error=regcomp(&dont_compress_regex,dont_compress,
-			   REG_EXTENDED|REG_NOSUB))<0) {
-	    char errstr[256];
-	    regerror(error,&dont_compress_regex,errstr,sizeof(errstr));
-	    fprintf(stderr,"Error in --dont-compress regex: %s\n",errstr);
-	    exit(1);
-	}
     }
     
     /* Start the pre-scanning thread if needed */
