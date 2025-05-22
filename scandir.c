@@ -210,10 +210,25 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
 	free(d);
 	d=NULL;
 	scans.pre_scan_used++;
+
+        /* Prescanned directories need to be reopened. */
+        if (result && result->handle==NULL) {
+                assert(result->parent && result->parent->magick==0xDADDAD && result->parent->handle);
+                int dfd=openat(dirfd(result->parent->handle),basename,O_DIRECTORY|O_RDONLY|O_NOFOLLOW);
+                struct stat dirstat,parentstat;
+                if (dfd<0 || fstatat(dfd,"..",&dirstat,AT_SYMLINK_NOFOLLOW)<0 || fstat(dirfd(result->parent->handle),&parentstat)<0 ||
+                        dirstat.st_dev!=parentstat.st_dev || dirstat.st_ino != parentstat.st_ino) {
+                        show_error("Directory has changed while dsync was running.",path);
+                        /* TODO: either rescan or continue */
+                        exit(1);
+                }
+                result->handle=fdopendir(dfd);
+                assert(result->handle);
+        }
     } else {
 	/* We did not have it in the list. Do the old fashion way */
 	scans.pre_scan_misses++;
-        printf("Miss: %s %s\n",path,basename);
+        // printf("Miss: %s %s\n",path,basename);
 	result=scan_directory(path,parent);
     }
 
@@ -232,41 +247,33 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
             d->parent=result;
 	    d->result=NULL;
 	    d->state=NOT_STARTED;
-            /* If directory contents were asked by the syncinc threads it is likely that the subdirectories
-             * will be needed next. */  
+            /* If directory contents were asked by the syncing threads it is likely that the subdirectories
+             * will be needed next, so they are placed in front of the queue  */
 	    d->next=pre_scan_list;
 	    pre_scan_list=d;
 	    scans.pre_scan_allocated++;
 	}
     }
     
+out:
     if (pre_scan_list) {
 	/* Kick the scanner thread */
 	pthread_cond_broadcast(&cond);
     }
-
- out:
     pthread_mutex_unlock(&mut);
     return result;
 }
 
 void *pre_read_loop(void *arg) {
     pthread_mutex_lock(&mut);
-    int ready_count=0;
 
     while(1) {
 	PreScan *d=NULL;
-        ready_count=0;
 
-        /* Limit the amount of pre scans by counting READY ones*/
-        for(d=pre_scan_list; d; d=d->next) {
-           if (d->state==READY) ready_count++;
-        }
-	
 	/* Try to find something to scan */
         for(d=pre_scan_list; d && d->state!=NOT_STARTED; d=d->next);
 
-	if ( (d==NULL) || d->state!=NOT_STARTED || ready_count>=256 ) {
+	if ( (d==NULL) || d->state!=NOT_STARTED ) {
 	    /* No directories to scan or ready_count full. Wait for something to come to the queue */
             /* printf("ready_count=%d\n",ready_count); */
             pthread_cond_wait(&cond,&mut);
@@ -277,6 +284,9 @@ void *pre_read_loop(void *arg) {
 	    pthread_mutex_unlock(&mut);
 	    d->result=scan_directory(d->dir,d->parent);
 	    pthread_mutex_lock(&mut);
+            /* Don't keep prescanned directories open. */
+            closedir(d->result->handle);
+            d->result->handle=NULL;
 	    d->state=READY;
 	    scans.pre_scan_dirs++;
 	    pthread_cond_broadcast(&cond);
