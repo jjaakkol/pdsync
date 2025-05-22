@@ -483,40 +483,48 @@ int copy_regular(Directory *from,
 		 Directory *to,
 		 const char *target,
                  off_t offset) {
-    int fromfd=-1;
-    int tofd=-1;
-    struct stat from_stat;
-    int sparse_copy=0;
-    int ret=0;
+        int fromfd=-1;
+        int tofd=-1;
+        struct stat from_stat;
+        int sparse_copy=0;
+        int ret=0;
 
-    assert(from && source && to && target);
+        assert(from && source && to && target);
 
-    if (verbose) {
-        printf("CP: %s\n",target);
-    }
+        if (offset>=0) {
+                printf("whee i'm a helper thread with offset %ld",offset);
+                return 0;
+        }
 
-    fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
-    if (fromfd<0 || fstat(fromfd,&from_stat)) {
-	show_error2("open","NOPATH",source);
-	goto fail;
-    }
+        fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
+        if (fromfd<0 || fstat(fromfd,&from_stat)) {
+	        show_error2("open","NOPATH",source);
+	        goto fail;
+        }
 
-    /* Check for sparse file */
-    if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
-	static int sparse_warned=0;
-	if (!sparse_warned && !preserve_sparse) {
-	    show_warning("Sparse or compressed files detected. Consider --sparse option",source);
-            sparse_warned++;
-	}
-	sparse_copy=preserve_sparse;
-    }
-
-    if (dryrun) {
-        opers.files_copied++;
-	opers.bytes_copied+=from_stat.st_size;
-        close(fromfd);
-        return 0;
-    }
+        /* offset -1 means that this is the first job operating on this file */
+        if (offset==-1) {
+                if (verbose) {
+                        printf("CP: %s\n",target);       
+                }
+                /* Check for sparse file */
+                if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
+	                static int sparse_warned=0;
+	                if (!sparse_warned && !preserve_sparse) {
+	                        show_warning("Sparse or compressed files detected. Consider --sparse option",source);
+                                sparse_warned++;
+                        }
+	        }
+	        sparse_copy=preserve_sparse;
+                if (dryrun) {
+                        opers.files_copied++;
+	                opers.bytes_copied+=from_stat.st_size;
+                        close(fromfd);
+                        return 0;
+                }
+        }
+        offset=0; 
+ 
 
     tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
     if(tofd<0) {
@@ -609,7 +617,7 @@ int create_target(Directory *from,
 
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
-	if (copy_regular(from,source,to,target,0)<0) {
+	if (copy_regular(from,source,to,target,-1)<0) {
 	    return -1; // Copy failed
 	}
 
