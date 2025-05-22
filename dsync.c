@@ -28,7 +28,7 @@ static int update_all=0;
 static int show_warnings=1;
 static int privacy=0;
 static int progress=0;
-static int pre_scan=0;
+static int threads=4;
 uid_t myuid=0;
 
 FILE *tty_stream=NULL; /* For --progress */
@@ -87,7 +87,7 @@ static Link **link_htable=NULL;
 static int hash_size=1009;
 
 enum { ATIME_PRESERVE=255, PRIVACY=256, DELETE_ONLY=257,
-       PRE_SCAN=258
+       THREADS=258
 };
 
 static struct option options[]= {
@@ -114,7 +114,7 @@ static struct option options[]= {
     { "atimes",          0, NULL, ATIME_PRESERVE },
     { "privacy",         0, NULL, PRIVACY },
     { "delete-only",     0, NULL, DELETE_ONLY },
-    { "pre-scan",        0, NULL, PRE_SCAN },
+    { "threads",         1, NULL, THREADS },
     { NULL, 0, NULL, 0 }       
 };
 
@@ -264,7 +264,16 @@ static int parse_options(int argc, char *argv[]) {
 	case ATIME_PRESERVE: atime_preserve=1; break;
 	case PRIVACY: privacy=1; break;
 	case DELETE_ONLY: delete=1; delete_only=1; break;
-	case PRE_SCAN: pre_scan=1; break;
+	case THREADS: {
+                        char *endptr=NULL;
+                        threads=strtol(optarg,&endptr,10);
+                        if (!optarg[0] || *endptr || threads<0 || threads > 256 ) {
+                                fprintf(stderr,"Invalid value given to --threads: '%s'\n",optarg);
+                                exit(1);
+                        }
+                        printf("Using %d threads\n",threads);
+                        break;
+                }
 	case 'a': 
 	    recursive=1;
 	    preserve_permissions=1;
@@ -966,11 +975,8 @@ int dsync(Directory *from_parent, char *fromdir,
   
     if (from->entries>0) show_progress("Scanning a directory.");
 
-    if (pre_scan) {
-	to=pre_scan_directory(todir,to_parent);
-    } else {
-	to=scan_directory(todir,to_parent);
-    }
+    to=pre_scan_directory(todir,to_parent);
+
     if ( delete_only && to==NULL ) {
 	if (verbose) {
 	    printf("NE: %s\n",todir);
@@ -1192,7 +1198,7 @@ int main(int argc, char *argv[]) {
     }
     
     /* Start the pre-scanning thread if needed */
-    if (pre_scan) start_pre_scan_thread();
+    if (threads) start_job_threads(threads);
     
     if (realpath(argv[optind+1],s_topath)==NULL) {
         fprintf(stderr,"realpath() failed for %s\n",argv[optind+1]);

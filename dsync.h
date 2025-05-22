@@ -67,4 +67,4 @@ Directory *scan_directory(const char *name, Directory *parent);
 void show_error(const char *why, const char *file);
 Directory *pre_scan_directory(const char *dir, Directory *parent);
 void *pre_read_loop(void *arg);
-void start_pre_scan_thread();
+void start_job_threads(int threads);
