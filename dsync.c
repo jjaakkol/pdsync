@@ -52,12 +52,6 @@ static char s_frompath[MAXLEN];
 static struct stat target_stat;
 static struct stat source_stat;
 
-    
-typedef struct EntryPathStruct {
-    const struct EntryPathStruct *parent;
-    const Entry *entry;
-} EntryPath;
-
 typedef struct {
     int dirs_created;
     int files_copied;
@@ -185,6 +179,7 @@ static void show_warning(const char *why, const char *file) {
 }
 
 /* Dumps recursively the path from EntryPath obeying privacy */
+#if 0 /* FIXME: EntryPath is gone and we have Directory */
 static int write_path(FILE *f, const EntryPath *path, const Entry *current) {
     int p=0;
     if (path) p=write_path(f,path->parent,path->entry);
@@ -197,6 +192,7 @@ static int write_path(FILE *f, const EntryPath *path, const Entry *current) {
 		 current->stat.st_uid!=myuid &&
 		 !(current->stat.st_mode & S_IROTH));    
 }
+#endif 
 
 /* Shows the progress, obeying privacy options */
 static void show_progress(const char *str) {
@@ -967,15 +963,13 @@ void save_link_info(const Entry *fentry, const char *path) {
 }
     
 int dsync(Directory *from_parent, char *fromdir, 
-        Directory *to_parent, char *todir,
-        const EntryPath *parent) {
+        Directory *to_parent, char *todir) {
     struct stat cdir;
     int fromfd=-1;
     int tofd=-1;
     Directory *from=NULL;
     Directory *to=NULL;
     int i;
-    EntryPath current={parent,NULL};
     int ret=-1;
     int tolen=strlen(todir);
 
@@ -993,13 +987,6 @@ int dsync(Directory *from_parent, char *fromdir,
     if ( fstat(dirfd(from->handle),&cdir) < 0 ){
         perror("fstat");
         exit(1);
-    }
-    if (parent && 
-	(cdir.st_dev!=parent->entry->stat.st_dev || 
-	 cdir.st_ino!=parent->entry->stat.st_ino)) {
-	show_error("Directory changed",fromdir);
-	opers.read_errors++;
-	goto fail;
     }
   
     if (from->entries>0) show_progress("Scanning a directory.");
@@ -1125,9 +1112,7 @@ int dsync(Directory *from_parent, char *fromdir,
 	
 	} else if (S_ISDIR(fentry->stat.st_mode)) {
 	    /* All checks turned out green: we recurse into a subdirectory */
-
-	    current.entry=fentry;
-	    dsync(from,fentry->name,to,todir,&current);
+	    dsync(from,fentry->name,to,todir);
             if ( fchdir(dirfd(from->handle)) ) {
                 perror("fchdir");
                 exit(1);
@@ -1263,7 +1248,7 @@ int main(int argc, char *argv[]) {
     }
     target_dir_len=strlen(target_dir);
 
-    dsync(NULL, s_frompath, NULL, s_topath, NULL);
+    dsync(NULL, s_frompath, NULL, s_topath);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
