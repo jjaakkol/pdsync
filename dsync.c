@@ -478,37 +478,26 @@ int remove_hierarchy(const char *dir, Directory *parent) {
     goto cleanup;
 }    
 
-int copy_regular(const char *path,
-		 const char *from, 
-		 const struct stat *s,
-		 const char *to) {
+int copy_regular(Directory *from,
+		 const char *source, 
+		 Directory *to,
+		 const char *target,
+                 off_t offset) {
     int fromfd=-1;
     int tofd=-1;
     struct stat from_stat;
     int sparse_copy=0;
-    int r;
     int ret=0;
 
+    assert(from && source && to && target);
 
     if (verbose) {
-        printf("CP: %s\n",to);
+        printf("CP: %s\n",target);
     }
 
-    if (dryrun) {
-        opers.files_copied++;
-	opers.bytes_copied+=s->st_size;
-	return 0;
-    }
-
-    fromfd=open(from,O_RDONLY|O_NOFOLLOW);
-    if (fromfd<0) {
-	show_error2("open",path,from);
-	goto fail;
-    }
-    if (fstat(fromfd,&from_stat)<0 || 
-	from_stat.st_dev!=s->st_dev ||
-	from_stat.st_ino!=s->st_ino) {
-	show_error2("file changed",path,from);
+    fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
+    if (fromfd<0 || fstat(fromfd,&from_stat)) {
+	show_error2("open","NOPATH",source);
 	goto fail;
     }
 
@@ -516,15 +505,22 @@ int copy_regular(const char *path,
     if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
 	static int sparse_warned=0;
 	if (!sparse_warned && !preserve_sparse) {
-	    show_warning("Sparse or compressed files detected. Consider --sparse option",from);
+	    show_warning("Sparse or compressed files detected. Consider --sparse option",source);
             sparse_warned++;
 	}
 	sparse_copy=preserve_sparse;
     }
 
-    tofd=open(to,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0666);
+    if (dryrun) {
+        opers.files_copied++;
+	opers.bytes_copied+=from_stat.st_size;
+        close(fromfd);
+        return 0;
+    }
+
+    tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
     if(tofd<0) {
-	show_error("open",to);
+	show_error("open",target);
 	opers.write_errors++;
 	goto fail;
     }
@@ -533,7 +529,8 @@ int copy_regular(const char *path,
 	/* Copy loop which handles sparse blocks */
 	char *spbuf=NULL;
 	int bsize=4096; // 4096 is the default size of many fs blocks
-	
+        int r;
+
 	spbuf=malloc(bsize);
         if (!spbuf) {
             perror("malloc");
@@ -558,7 +555,7 @@ int copy_regular(const char *path,
 	    while (written<r) {
 		int w=write(tofd,spbuf+written,r-written);
 		if (w<0) {
-		    show_error("write",to);
+		    show_error("write",target);
 		    opers.write_errors++;
 		    goto fail;
 		}
@@ -567,6 +564,10 @@ int copy_regular(const char *path,
 	    }
 	}
 	free(spbuf);
+        if (r<0) {
+                show_error("read",source);
+                goto fail;
+        }
 	
     } else {
 	/* Simple loop with no regard to filesystem block size or sparse blocks*/
@@ -578,85 +579,66 @@ int copy_regular(const char *path,
                 show_progress("Copying a file.");
         }
 	if (w<0) {
-		show_error("write",to);
+		show_error("write",target);
 		opers.write_errors++;
 		goto fail;
 	}
-        r=0;
     }
 
-    if (r<0) {
-	show_error2("read",path,from);
-	goto fail;
-    }
     opers.files_copied++;
 
  end:
-    if (fromfd>0) {
+    if (fromfd>=0) {
 	close(fromfd);    
-	if (atime_preserve) {
-	    struct utimbuf tmp;
-	    tmp.actime=from_stat.st_atime;
-	    tmp.modtime=from_stat.st_mtime;
-	    if (utime(from,&tmp)<0) {
-		show_error2("utime",path,from);
-		opers.read_errors++;
-	    }
-	}
     }
-    if (tofd>0) close(tofd);
+    if (tofd>=0) close(tofd);
     return ret;
 
  fail:
-    if (tofd>0) {
-	static int unlink_warned=0;
-	if (!unlink_warned) {
-	    show_warning("Unlinking failed copy",to);
-	    unlink_warned=1;
-	}
-	if (unlink(to)<0) show_error("unlink",to);
-    }
-    opers.read_errors++;
     ret= -1;
     goto end;
 }
 
-int create_target(const char *path,
-		  const char *todir, 
+int create_target(Directory *from,
+                  const char *source,
+                  Directory *to,
+                  const char *target,
 		  const Entry *fentry) {
+    assert(from && source && to && target && fentry);
+    int tofd=dirfd(to->handle);
+
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
-	if (copy_regular(path,fentry->name,&fentry->stat,todir)<0) {
-	    /* Copy failed */
-	    return -1;
+	if (copy_regular(from,source,to,target,0)<0) {
+	    return -1; // Copy failed
 	}
 
     } else if (S_ISDIR(fentry->stat.st_mode)) {
 	/* Directory: create the target directory.
-	 * We will be here regardless of whether the directory allready 
+	 * We will be here regardless of whether the directory already 
 	 * existed or not. So we test it. */
 	struct stat tmp;
 	if (!recursive) return -1;
-	if (lstat(todir,&tmp)<0) {
-	    if (verbose) printf("MD: %s\n",todir);
-	    if (!dryrun && mkdir(todir,0777)<0 ) {
-		show_error("mkdir",todir);
+	if (fstatat(tofd,target,&tmp,0)<0) {
+	    if (verbose) printf("MD: %s\n",target);
+	    if (!dryrun && mkdirat(tofd,target,0777)<0 ) {
+		show_error("mkdir",target);
 		goto fail;
 	    }
 	    opers.dirs_created++;
 	} else if (!dryrun) {
 	    if (!S_ISDIR(tmp.st_mode)) {
 		errno=0;
-		show_error("Target is not a directory",todir);
+		show_error("Target is not a directory",target);
 		goto fail;
 	    }
 	    if (safe_mode) {
-		if (preserve_owner && lchown(todir,0,0)<0) {
-		    show_error("lchown",todir);
+		if (preserve_owner && fchown(tofd,0,0)<0) {
+		    show_error("fchown",target);
 		    goto fail;
 		}
-		if (chmod(todir,0700)<0) {
-		    show_error("chmod",todir);
+		if (fchmod(tofd,0700)<0) {
+		    show_error("chmod",target);
 		    goto fail;
 		}
 	    }
@@ -664,15 +646,18 @@ int create_target(const char *path,
 
     } else if (S_ISLNK(fentry->stat.st_mode)) {
 	/* Create symbolic link */
-	if (!preserve_links) return -1;
-	if (verbose) printf("SL: %s\n",todir);
-	if (!dryrun && symlink(fentry->link,todir)<0) {
+	if (!preserve_links) return 0;
+	if (verbose) printf("SL: %s\n",target);
+	if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
 	    /* Symlink failed */
-	    show_error("symlink",todir);
+	    show_error("symlink",target);
 	    goto fail;
 	} else {
 	    opers.symlinks_created++;
 	}
+
+        // Maybe don't even create sockets?
+#if 0
 
     } else if (S_ISSOCK(fentry->stat.st_mode)) {
 	/* Create a socket */
@@ -698,20 +683,22 @@ int create_target(const char *path,
 	    }
 	    close(s);
 	}
-	    
+#endif	    
 
     } else if (S_ISFIFO(fentry->stat.st_mode)) {
 	/* Create a FIFO */
 	if (!preserve_devices) return -1;
 	if (verbose) {
-	    printf("FI: %s\n",todir);
+	    printf("FI: %s\n",target);
 	}
-	if (!dryrun && mkfifo(todir,0777)<0) {
-	    show_error("mkfifo",todir);
+	if (!dryrun && mkfifoat(tofd,target,0777)<0) {
+	    show_error("mkfifo",target);
 	    goto fail;
 	}
 	opers.fifos_created++;
 
+        // Don't bother when device special files 
+#if 0
     } else if (S_ISCHR(fentry->stat.st_mode) ||
 	S_ISBLK(fentry->stat.st_mode) ) {
 	/* Create a inode device */
@@ -725,10 +712,11 @@ int create_target(const char *path,
 	    goto fail;
 	}
 	opers.devs_created++;
+#endif
 
     } else {
-	if (verbose) printf("UN: %s\n",todir);
-	show_warning("Unknown file type ignored",todir);
+	if (verbose) printf("UN: %s\n",source);
+	show_warning("Unknown file type ignored",source);
     }   
     return 0;
 
@@ -1055,7 +1043,7 @@ int dsync(Directory *from_parent, char *fromdir,
 		}
 	    }
 
-	    if (create_target(".",todir,fentry)<0) {
+	    if (create_target(from,fentry->name,to,fentry->name,fentry)<0) {
 		/* Failed to create new entry */
 		continue;
 	    }
