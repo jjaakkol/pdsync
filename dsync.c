@@ -428,19 +428,6 @@ void d_freedir(Directory *dir) {
     free(dir);
 }
 
-int remove_file(const char *file,const Directory *to) {
-    if (verbose) printf("RM: %s\n",file);
-    if (!dryrun) {
-	if (unlinkat(dirfd(to->handle),file,0)<0) {
-	    show_error("unlink",file);
-	    opers.write_errors++;
-	    return -1;
-	} 
-    }
-    opers.entries_removed++;
-    return 0;
-}
-
 int remove_hierarchy(
 		     const char *dir, 
                      Directory *parent,
@@ -846,13 +833,22 @@ int create_target(const char *path,
     return -1;
 }
 
-/* TODO: just remove this function */
+/* Remove one entry from a directory */
 int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
     if (S_ISDIR(stat->st_mode)) {
         remove_hierarchy(name,parent,stat);
     } else {
-	remove_file(name,parent);
+        if (verbose) printf("RM: %s\n",name);
+        if (!dryrun) {
+	        if ( unlinkat(dirfd(parent->handle),name,AT_SYMLINK_NOFOLLOW)) {
+	        show_error("unlink",name);
+	        opers.write_errors++;
+	        return -1;
+	}
     }
+    opers.entries_removed++;
+    return 0;
+}
     return 0;
 }
 
