@@ -19,6 +19,7 @@
 #include <regex.h>
 #include <time.h>
 #include <dirent.h>
+#include <sys/sendfile.h>
 #ifdef HAVE_PTHREAD
 #include <pthread.h>
 #endif

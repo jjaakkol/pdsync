@@ -677,19 +677,17 @@ int copy_regular(const char *path,
 	/* Simple loop with no regard to filesystem block size or sparse blocks*/
 	/* FIXME: support larger writes and avoid block boundaries to avoid write amplification */
         char buf[1024*1024];
-	while( (r=read(fromfd,buf,sizeof(buf))) > 0 ) {
-	    int written=0;
-	    while (written<r) {
-		int w=write(tofd,buf+written,r-written);
-		if (w<0) {
-		    show_error("write",to);
-		    opers.write_errors++;
-		    goto fail;
-		}
-		written+=w;
-		opers.bytes_copied+=w;
-	    }
+        off_t offset=0;
+        int w=0;
+        while( (w=sendfile(tofd,fromfd,&offset,sizeof(buf))) >0) {
+                opers.bytes_copied+=w;
+        }
+	if (w<0) {
+		show_error("write",to);
+		opers.write_errors++;
+		goto fail;
 	}
+        r=0;
     }
 
     if (r<0) {
