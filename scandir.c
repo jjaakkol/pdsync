@@ -2,21 +2,22 @@
 
 typedef enum {
     NOT_STARTED=0,
-    SCANNING=1,
+    RUNNING=1,
     READY=2
-} ScanState;
+} JobState;
 
-typedef struct PreScanStruct {
-    Directory *parent;
+typedef struct JobStruct {
+    Directory *from;
+    Directory *to;
     char *dir;
-    ScanState state;
+    JobState state;
     Directory *result;
-    struct PreScanStruct *next;
-} PreScan;
+    struct JobStruct *next;
+} Job;
 
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-PreScan *pre_scan_list=NULL;
+Job *pre_scan_list=NULL;
 pthread_t pre_reader;
 
 static int my_strcmp(const void *x, const void *y) {
@@ -151,8 +152,8 @@ Directory *scan_directory(const char *name, Directory *parent) {
 }
 
 Directory *pre_scan_directory(const char *path, Directory *parent) {
-    PreScan *d=NULL;
-    PreScan *prev=NULL;
+    Job *d=NULL;
+    Job *prev=NULL;
     Directory *result=NULL;
     const char *basename=NULL;
     int i;
@@ -170,7 +171,7 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
     /* Check if we already have the dir in scanlist */
     for (d=pre_scan_list; d; d=d->next) {
         // printf("pre_scan %s %s\n",dir,d->dir);
-        if ( d->parent==parent && strcmp(d->dir,basename)==0 ) break;
+        if ( d->from==parent && strcmp(d->dir,basename)==0 ) break;
         prev=d;
     }
 
@@ -179,13 +180,13 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
 	switch(d->state) {
 	case NOT_STARTED:
 	    /* The scanning thread has not scanned the directory, so do it ourselves */
-	    d->state=SCANNING;
+	    d->state=RUNNING;
 	    scans.pre_scan_misses++;
             pthread_mutex_unlock(&mut);
 	    d->result=scan_directory(path,parent);
 	    pthread_mutex_lock(&mut);
 	    break;
-	case SCANNING:
+	case RUNNING:
 	    /* Already started. Wait for finish */
 	    scans.pre_scan_wait_hits++;
 	    /* Wait until the reader has read it */
@@ -244,7 +245,7 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
                         perror("malloc");
                         exit(1);
                 }
-            d->parent=result;
+            d->from=result;
 	    d->result=NULL;
 	    d->state=NOT_STARTED;
             /* If directory contents were asked by the syncing threads it is likely that the subdirectories
@@ -268,7 +269,7 @@ void *pre_read_loop(void *arg) {
     pthread_mutex_lock(&mut);
 
     while(1) {
-	PreScan *d=NULL;
+	Job *d=NULL;
 
 	/* Try to find something to scan */
         for(d=pre_scan_list; d && d->state!=NOT_STARTED; d=d->next);
@@ -279,10 +280,10 @@ void *pre_read_loop(void *arg) {
             pthread_cond_wait(&cond,&mut);
 	} else {
 	    /* Found a directory to scan */
-	    d->state=SCANNING;
+	    d->state=RUNNING;
 	    /* printf("pre_scanner scanning %s\n",d->dir); */
 	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(d->dir,d->parent);
+	    d->result=scan_directory(d->dir,d->from);
 	    pthread_mutex_lock(&mut);
             /* Don't keep prescanned directories open. */
             closedir(d->result->handle);
