@@ -213,6 +213,7 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
     } else {
 	/* We did not have it in the list. Do the old fashion way */
 	scans.pre_scan_misses++;
+        printf("Miss: %s %s\n",path,basename);
 	result=scan_directory(path,parent);
     }
 
@@ -231,7 +232,9 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
             d->parent=result;
 	    d->result=NULL;
 	    d->state=NOT_STARTED;
-	    d->next=pre_scan_list;	    
+            /* If directory contents were asked by the syncinc threads it is likely that the subdirectories
+             * will be needed next. */  
+	    d->next=pre_scan_list;
 	    pre_scan_list=d;
 	    scans.pre_scan_allocated++;
 	}
@@ -263,7 +266,7 @@ void *pre_read_loop(void *arg) {
 	/* Try to find something to scan */
         for(d=pre_scan_list; d && d->state!=NOT_STARTED; d=d->next);
 
-	if ( (d==NULL) || d->state!=NOT_STARTED || ready_count>=16 ) {
+	if ( (d==NULL) || d->state!=NOT_STARTED || ready_count>=256 ) {
 	    /* No directories to scan or ready_count full. Wait for something to come to the queue */
             /* printf("ready_count=%d\n",ready_count); */
             pthread_cond_wait(&cond,&mut);
@@ -283,8 +286,11 @@ void *pre_read_loop(void *arg) {
 }
 
 void start_pre_scan_thread() {
-    if (pthread_create(&pre_reader,NULL,pre_read_loop,NULL)<0) {
-	perror("thread_create");
-	exit(1);
+    int pre_scan_threads=4;
+    for(int i=0; i<pre_scan_threads; i++) {
+        if (pthread_create(&pre_reader,NULL,pre_read_loop,NULL)<0) {
+	        perror("thread_create");
+	        exit(1);
+        }
     }
 }

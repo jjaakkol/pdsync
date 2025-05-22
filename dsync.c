@@ -1107,7 +1107,7 @@ int dsync(Directory *from_parent, char *fromdir,
     int ret=-1;
     int tolen=strlen(todir);
 
-    from=scan_directory(fromdir,from_parent);
+    from=pre_scan_directory(fromdir,from_parent);
     if (from==NULL) {
 	show_error("readdir",fromdir);
 	opers.read_errors++;
