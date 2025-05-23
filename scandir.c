@@ -316,8 +316,10 @@ Job *run_job(Job *job) {
                         pthread_mutex_unlock(&mut);
                         j->result=scan_directory(j->source,j->from);
                         /* Don't keep prescanned directories open. */
-                        if (j->result->handle) closedir(j->result->handle);
-                        j->result->handle=NULL;
+                        if (j->result) {
+                                if (j->result->handle) closedir(j->result->handle);
+                                j->result->handle=NULL;
+                        }
                         pthread_mutex_lock(&mut);
                         j->state=SCAN_READY;
                         j=pre_scan_list;
