@@ -63,8 +63,15 @@ typedef struct {
 } Scans;
 extern Scans scans;
 
+typedef int (JobCallback) (Directory *from,
+		 const char *source, 
+		 Directory *to,
+		 const char *target,
+                 off_t offset);
+
 Directory *scan_directory(const char *name, Directory *parent);
 void show_error(const char *why, const char *file);
 Directory *pre_scan_directory(const char *dir, Directory *parent);
-void *pre_read_loop(void *arg);
 void start_job_threads(int threads);
+void d_freedir(Directory *dir);
+

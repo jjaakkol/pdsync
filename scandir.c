@@ -1,9 +1,13 @@
 #include "dsync.h"
 
 typedef enum {
-    NOT_STARTED=0,
-    RUNNING=1,
-    READY=2
+    SCAN_WAITING,
+    SCAN_RUNNING,
+    SCAN_READY,
+    JOB_WAITING,
+    JOB_RUNNING,
+    JOB_READY,
+    JOB_INVALID /* Catch use after frees */
 } JobState;
 
 typedef struct JobStruct {
@@ -14,6 +18,9 @@ typedef struct JobStruct {
     Directory *result;
     JobState state;
     struct JobStruct *next;
+    JobCallback *callback;
+    off_t offset;
+    int ret;
 } Job;
 
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
@@ -150,160 +157,203 @@ Directory *scan_directory(const char *name, Directory *parent) {
     return NULL;
 }
 
+/* Threaded directory scan:
+ * - if we know nothing of the directory or it is waiting in queue scan it in this thread.
+ * - If it is already being scanned by another thread, wait for it. 
+ * - If it has been already scanned by another thread use the result. 
+ * - Launch directory scan jobs for subdirectories found.ACCESSPERMS
+ */
 Directory *pre_scan_directory(const char *path, Directory *parent) {
-    Job *d=NULL;
-    Job *prev=NULL;
-    Directory *result=NULL;
-    const char *basename=NULL;
-    int i;
+        Job *d=NULL;
+        Directory *result=NULL;
+        const char *basename=NULL;
+        int i;
 
-    /* Lock the list */
-    pthread_mutex_lock(&mut);
+        /* Lock the list */
+        pthread_mutex_lock(&mut);
 
-    /* The prescanner only knows the parent and the last compotent of the dir name */
-    basename=path;
-    for (i=0; path[i]; i++) {
-        if (path[i]=='/') basename=path+i+1;
-    }
-    assert(basename[0]!='\0' && basename[0]!='/');
+        /* The prescanner only knows the parent and the last compotent of the dir name */
+        basename=path;
+        for (i=0; path[i]; i++) {
+                if (path[i]=='/') basename=path+i+1;
+        }
+        assert(basename[0]!='\0' && basename[0]!='/');
 
-    /* Check if we already have the dir in scanlist */
-    for (d=pre_scan_list; d; d=d->next) {
-        // printf("pre_scan %s %s\n",dir,d->dir);
-        if ( d->from==parent && strcmp(d->source,basename)==0 ) break;
-        prev=d;
-    }
+        /* Loop over the job queue to find matching scan job if any */
+        for (d=pre_scan_list; d; d=d->next) {
+                // printf("pre_scan %s %s\n",dir,d->dir);
+                assert(d->state!=JOB_INVALID);
 
-    if (d) {
-	/* We had it in the list */
-	switch(d->state) {
-	case NOT_STARTED:
-	    /* The job has not started yet, so do it ourselves */
-	    d->state=RUNNING;
-	    scans.pre_scan_misses++;
-            pthread_mutex_unlock(&mut);
-            // printf("scanning ourselves %s\n",path);
-	    d->result=scan_directory(path,parent);
-	    pthread_mutex_lock(&mut);
-	    break;
-	case RUNNING:
-	    /* Already started. Wait for finish */
-	    scans.pre_scan_wait_hits++;
-	    /* Wait until the reader has read it */
-	    while(d->state!=READY) {
-		pthread_cond_broadcast(&cond);
-		pthread_cond_wait(&cond,&mut);
-	    }
-	    break;
-	case READY:
-	    /* Success, the scan had already finished before the results were needed. */
-	    scans.pre_scan_hits++;
-	    break;
-	}
-	/* Remove the directory from pre-scan list. */
-	if (prev) {
-	    prev->next=d->next;
-	} else {
-	    pre_scan_list=d->next;
-	}
-	result=d->result; /* Might be NULL in case of error */
-	free(d->source);
-	free(d);
-	d=NULL;
-	scans.pre_scan_used++;
+                if (d->state==SCAN_WAITING || d->state==SCAN_RUNNING || d->state==SCAN_READY) {
+                        if (d->from==parent && strcmp(d->source,basename) ==0 ) break;
+                }
+        }
 
-        /* Prescanned directories need to be reopened. */
+        if (d) {
+	        /* We found our prescan job. */
+	        switch(d->state) {
+	        case SCAN_WAITING:
+	                /* The job for this directory has not started yet. We run it in this thread later */
+	                scans.pre_scan_misses++;
+	                break;
+	        case SCAN_RUNNING:
+	                /* Scan had already started. Wait for the scanning thread to finish */
+	                scans.pre_scan_wait_hits++;
+	                while(d->state!=SCAN_READY) {
+		                pthread_cond_broadcast(&cond);
+		                pthread_cond_wait(&cond,&mut);
+	                }
+	                break;
+	        case SCAN_READY:
+                        /* The scan has finished */
+	                scans.pre_scan_hits++;
+	                break;
+                default: assert(0); /* Silence a warning*/
+                }
+
+                /* Remove the found job from queue and free it */
+                if (d==pre_scan_list) pre_scan_list=d->next;
+                else {
+                        Job *prev=pre_scan_list;
+                        while (prev->next !=d) prev=prev->next;
+                        prev->next=d->next;
+                }
+                d->next=NULL;
+                result=d->result; /* Might be NULL in case of error */
+                d->state=JOB_INVALID;
+	        free(d->source);
+	        free(d);
+                d=NULL;
+	        scans.pre_scan_used++;
+        }    
+
+        pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory*/
+
+        /* Reopen the DIR * handle of prescanned directories. */
         if (result && result->handle==NULL) {
                 assert(result->parent && result->parent->magick==0xDADDAD && result->parent->handle);
                 int dfd=openat(dirfd(result->parent->handle),basename,O_DIRECTORY|O_RDONLY|O_NOFOLLOW);
                 struct stat dirstat,parentstat;
-                if (dfd<0 || fstatat(dfd,"..",&dirstat,AT_SYMLINK_NOFOLLOW)<0 || fstat(dirfd(result->parent->handle),&parentstat)<0 ||
+                if (dfd<0 || 
+                        fstatat(dfd,"..",&dirstat,AT_SYMLINK_NOFOLLOW)<0 || 
+                        fstat(dirfd(result->parent->handle),&parentstat)<0 ||
                         dirstat.st_dev!=parentstat.st_dev || dirstat.st_ino != parentstat.st_ino) {
-                        show_error("Directory has changed while dsync was running.",path);
-                        /* TODO: either rescan or continue */
-                        exit(1);
+                        show_error("directory has changed.",path);
+                        d_freedir(result);
+                        return NULL;
                 }
                 result->handle=fdopendir(dfd);
                 assert(result->handle);
+        } else {
+	        /* The directory was not in queue or was not started. Scan it in this thread*/
+	        scans.pre_scan_misses++;
+                // printf("Miss: %s %s\n",path,basename);
+	        result=scan_directory(path,parent);
         }
-    } else {
-	/* We did not have it in the list. Do the old fashion way */
-	scans.pre_scan_misses++;
-        // printf("Miss: %s %s\n",path,basename);
-	result=scan_directory(path,parent);
-    }
 
-    if (result==NULL) goto out;
+        pthread_mutex_lock(&mut); /* Need mutex to add new jobs */
+   
+        if (result==NULL) goto out;
 
-    /* Now add the newly found directories to scan list */
-    for(i=result->entries-1; i>=0; i--) {
-	if (S_ISDIR(result->array[i].stat.st_mode)) {
-	    /* Found a directory to prescan */
-
-            if ( (d=malloc(sizeof(*d))) == NULL  || 
-                (d->source=strdup(result->array[i].name)) == NULL ) {
-                        perror("malloc");
-                        exit(1);
-                }
-            d->from=result;
-	    d->result=NULL;
-	    d->state=NOT_STARTED;
-            /* If directory contents were asked by the syncing threads it is likely that the subdirectories
-             * will be needed next, so they are placed in front of the queue  */
-	    d->next=pre_scan_list;
-	    pre_scan_list=d;
-	    scans.pre_scan_allocated++;
-	}
-    }
+        /* Now add the newly found directories to the job queue for prescanning*/
+        for(i=result->entries-1; i>=0; i--) {
+	        if (S_ISDIR(result->array[i].stat.st_mode)) {
+                        if ( (d=calloc(sizeof(*d),1)) == NULL  || 
+                                (d->source=strdup(result->array[i].name)) == NULL ) {
+                                perror("malloc");
+                                exit(1);
+                        }
+                        d->from=result;
+	                d->result=NULL;
+	                d->state=SCAN_WAITING;
+                        d->callback=NULL;
+	                d->next=pre_scan_list;
+	                pre_scan_list=d;
+	                scans.pre_scan_allocated++;
+	        }
+        }
     
 out:
-    if (pre_scan_list) {
-	/* Kick the scanner thread */
-	pthread_cond_broadcast(&cond);
-    }
-    pthread_mutex_unlock(&mut);
-    return result;
+        if (pre_scan_list) {
+	        /* Kick the work queue thread */
+	        pthread_cond_broadcast(&cond);
+        }
+        pthread_mutex_unlock(&mut);
+        return result;
 }
 
-void *pre_read_loop(void *arg) {
-    pthread_mutex_lock(&mut);
+/* Threads wait in this loop for jobs to run */
+void *job_queue_loop(void *arg) {
+        Job *d=pre_scan_list;
 
-    while(1) {
-	Job *d=NULL;
+        pthread_mutex_lock(&mut);
+        /* Loop until exit() is called*/
+        while(1) {
+                if (!d) {
+                        /* No jobs to run. Wait for something to come to the queue */
+                        pthread_cond_wait(&cond,&mut);
+                        d=pre_scan_list;
+                        continue;
+                }
 
-	/* Try to find something to scan */
-        for(d=pre_scan_list; d && d->state!=NOT_STARTED; d=d->next);
+	        /* Try to find a job to run */
+                switch (d->state) {
+                case SCAN_WAITING:
+                        d->state=SCAN_RUNNING;
+                        pthread_mutex_unlock(&mut);
+                        d->result=scan_directory(d->source,d->from);
+                        /* Don't keep prescanned directories open. */
+                        if (d->result->handle) closedir(d->result->handle);
+                        d->result->handle=NULL;
+                        pthread_mutex_lock(&mut);
+                        d->state=SCAN_READY;
+                        d=pre_scan_list;
+                        pthread_cond_broadcast(&cond);
+                        break;
+                case JOB_WAITING:
+                        d->state=JOB_RUNNING;
+                        pthread_mutex_unlock(&mut);
+                        assert(d->callback);
+                        d->ret=d->callback(d->from,d->source,d->to,d->target,d->offset);
+                        pthread_mutex_lock(&mut);
+                        d->state=JOB_READY;
+                        d=pre_scan_list;
+                        pthread_cond_broadcast(&cond);
+                        break;
+                default:
+                        d=d->next;
+                }
 
-	if ( (d==NULL) || d->state!=NOT_STARTED ) {
-	    /* No directories to scan or ready_count full. Wait for something to come to the queue */
-            /* printf("ready_count=%d\n",ready_count); */
-            pthread_cond_wait(&cond,&mut);
-	} else {
-	    /* Found a directory to scan */
-	    d->state=RUNNING;
-	    // printf("pre_scanner scanning %s\n",d->source);
-            assert(d->from && d->from->magick == 0xDADDAD);
-	    pthread_mutex_unlock(&mut);
-	    d->result=scan_directory(d->source,d->from);
-	    pthread_mutex_lock(&mut);
-            /* Don't keep prescanned directories open. */
-            closedir(d->result->handle);
-            d->result->handle=NULL;
-	    d->state=READY;
-	    scans.pre_scan_dirs++;
-	    pthread_cond_broadcast(&cond);
-	}
-    }
-    return NULL; /* Never */
+        }
+
+    /* Never return */
+}
+
+Job Hello;
+int hello_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset) {
+        printf("Hello world %s %ld\n",source, offset);
+        return 0;
 }
 
 void start_job_threads(int job_threads) {
         pthread_t threads[job_threads];
         for(int i=0; i<job_threads; i++) {
-                if (pthread_create(&threads[i],NULL,pre_read_loop,NULL)<0) {
+                if (pthread_create(&threads[i],NULL,job_queue_loop,NULL)<0) {
 	                perror("thread_create");
 	                exit(1);
                 }
         }
         printf("Started %d threads\n",job_threads);
+
+        Job *job=&Hello;
+        job->callback=hello_job;
+        job->state=JOB_WAITING;
+        job->from=NULL;
+        job->source="/HELLO/";
+        job->offset=666;
+
+        pthread_mutex_lock(&mut);
+	job->next=pre_scan_list;
+	pre_scan_list=job;
+        pthread_mutex_unlock(&mut); 
 }
