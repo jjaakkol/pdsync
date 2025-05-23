@@ -296,6 +296,7 @@ Job *run_job(Job *job) {
         assert(job->state==JOB_WAITING && job->callback);
         job->state=JOB_RUNNING;
         pthread_mutex_unlock(&mut);
+        assert(job->from);
         job->ret=job->callback(job->from,job->source,job->to,job->target,job->offset);
         pthread_mutex_lock(&mut);
         job->state=JOB_READY;
@@ -315,6 +316,7 @@ void *job_queue_loop(void *arg) {
                         d=pre_scan_list;
                         continue;
                 }
+                assert(d->from);
 
 	        /* Try to find a job to run */
                 switch (d->state) {
@@ -345,6 +347,7 @@ void *job_queue_loop(void *arg) {
 }
 
 Job *submit_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset, JobCallback *callback) {
+        assert(from);
         Job *job=calloc( sizeof (Job), 1);
         if (!job) {
                 perror("calloc");
@@ -357,16 +360,18 @@ Job *submit_job(Directory *from, const char *source, Directory *to, const char *
         job->offset=offset;
         job->callback=callback;
         job->state=JOB_WAITING;
-        job->from=NULL;
 
         pthread_mutex_lock(&mut);
 	job->next=pre_scan_list;
 	pre_scan_list=job;
         pthread_mutex_unlock(&mut); 
+        pthread_cond_broadcast(&cond);
+
         return job;
 }
 
 int wait_for_job(Job *job) {
+       assert(job);
        pthread_mutex_lock(&mut);
        while(job->state!=JOB_READY) {
                 if (job->state==JOB_RUNNING) {
