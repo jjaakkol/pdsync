@@ -488,20 +488,17 @@ int copy_regular(Directory *from,
         struct stat from_stat;
         int sparse_copy=0;
         int ret=0;
+        off_t copy_job_size=128*1024*1024;
+        Job **jobs=NULL;
+        int num_jobs=0;
 
         assert(from && source && to && target);
-
-        if (offset>=0) {
-                printf("whee i'm a helper thread with offset %ld",offset);
-                return 0;
-        }
 
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
 	        show_error2("open","NOPATH",source);
 	        goto fail;
         }
-
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
                 if (verbose) {
@@ -522,9 +519,24 @@ int copy_regular(Directory *from,
                         close(fromfd);
                         return 0;
                 }
-        }
-        offset=0; 
- 
+
+                /* Start the other copy threads from the first thread */
+                num_jobs=from_stat.st_size/copy_job_size;
+                jobs=calloc( sizeof(Job *),num_jobs);
+                for (int i=num_jobs-1; i>=0; i--) {
+                        jobs[i]=submit_job(from,source,to,target,copy_job_size*i,copy_regular);
+                }
+                int failed_jobs=0;
+                for (int i=0; i<num_jobs; i++) {
+                        assert(jobs[i]);
+                        if (wait_for_job(jobs[i])!=0) failed_jobs++;
+                }
+                free(jobs);
+                if (failed_jobs) fprintf(stderr,"%d failed copy jobs for %s",failed_jobs,target);
+                /* Let this thread copy the last bits */
+                offset=num_jobs*copy_job_size;
+
+    }
 
     tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
     if(tofd<0) {
@@ -579,11 +591,15 @@ int copy_regular(Directory *from,
 	
     } else {
 	/* Simple loop with no regard to filesystem block size or sparse blocks*/
-        char buf[1024*1024];
-        off_t offset=0;
         int w=0;
-        while( (w=sendfile(tofd,fromfd,&offset,sizeof(buf))) >0) {
+        if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
+                show_error("lseek",target);
+                goto fail;
+        }
+        off_t towrite=copy_job_size;
+        while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
                 opers.bytes_copied+=w;
+                towrite-=w;
                 show_progress("Copying a file.");
         }
 	if (w<0) {
@@ -1235,12 +1251,12 @@ int main(int argc, char *argv[]) {
     target_dir_len=strlen(target_dir);
 
      // Subnt testing
-    Job *job=submit_job(NULL,"/HELLO/!",NULL,NULL,666,hello_job);
+    //Job *job=submit_job(NULL,"/HELLO/!",NULL,NULL,666,hello_job);
  
     dsync(NULL, s_frompath, NULL, s_topath);
 
     // result testing
-    printf("job result %d\n",wait_for_job(job));
+    //printf("job result %d\n",wait_for_job(job));
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
