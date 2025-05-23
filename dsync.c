@@ -958,8 +958,8 @@ void save_link_info(const Entry *fentry, const char *path) {
     link_htable[hval]=link;
 }
     
-int dsync(Directory *from_parent, char *fromdir, 
-        Directory *to_parent, char *todir) {
+int dsync(Directory *from_parent, const char *source, 
+        Directory *to_parent, const char *target) {
     struct stat cdir;
     int fromfd=-1;
     int tofd=-1;
@@ -967,15 +967,18 @@ int dsync(Directory *from_parent, char *fromdir,
     Directory *to=NULL;
     int i;
     int ret=-1;
-    int tolen=strlen(todir);
+    int tolen=strlen(target);
+    char todir[MAXLEN];
 
-    from=pre_scan_directory(fromdir,from_parent);
+    strncpy(todir,target,sizeof(todir));
+
+    from=pre_scan_directory(source,from_parent);
     if (from==NULL) {
-	show_error("readdir",fromdir);
+	show_error("readdir",source);
 	opers.read_errors++;
 	goto fail;
     }
-    /* FIXME: remove all chdirs */
+
     if ( fchdir(dirfd(from->handle)) ) {
         perror("fchdir");
         exit(1);
