@@ -303,44 +303,50 @@ Job *run_job(Job *job) {
         return job;
 }
 
+/* Runs one job: can be called by a thread when waiting jobs to finish.
+ * Assumes mutex is heald.ACCESSPERMS
+ */
+ int run_one_job() {
+        Job *j=pre_scan_list;
+        while(j) {
+	        /* Try to find a job to run */
+                switch (j->state) {
+                case SCAN_WAITING:
+                        j->state=SCAN_RUNNING;
+                        pthread_mutex_unlock(&mut);
+                        j->result=scan_directory(j->source,j->from);
+                        /* Don't keep prescanned directories open. */
+                        if (j->result->handle) closedir(j->result->handle);
+                        j->result->handle=NULL;
+                        pthread_mutex_lock(&mut);
+                        j->state=SCAN_READY;
+                        j=pre_scan_list;
+                        pthread_cond_broadcast(&cond);
+                        return 1;
+                case JOB_WAITING:
+                        run_job(j);
+                        j=pre_scan_list;
+                        pthread_cond_broadcast(&cond);
+                        return 1;
+                default:
+                        j=j->next;
+                }
+        }
+        return 0;
+
+ }
+
 /* Threads wait in this loop for jobs to run */
 void *job_queue_loop(void *arg) {
-        Job *d=pre_scan_list;
 
         pthread_mutex_lock(&mut);
         /* Loop until exit() is called*/
         while(1) {
-                if (!d) {
+                if (!run_one_job()) {
                         /* No jobs to run. Wait for something to come to the queue */
                         pthread_cond_wait(&cond,&mut);
-                        d=pre_scan_list;
                         continue;
                 }
-                assert(d->from);
-
-	        /* Try to find a job to run */
-                switch (d->state) {
-                case SCAN_WAITING:
-                        d->state=SCAN_RUNNING;
-                        pthread_mutex_unlock(&mut);
-                        d->result=scan_directory(d->source,d->from);
-                        /* Don't keep prescanned directories open. */
-                        if (d->result->handle) closedir(d->result->handle);
-                        d->result->handle=NULL;
-                        pthread_mutex_lock(&mut);
-                        d->state=SCAN_READY;
-                        d=pre_scan_list;
-                        pthread_cond_broadcast(&cond);
-                        break;
-                case JOB_WAITING:
-                        run_job(d);
-                        d=pre_scan_list;
-                        pthread_cond_broadcast(&cond);
-                        break;
-                default:
-                        d=d->next;
-                }
-
         }
 
     /* Never return */
@@ -364,6 +370,7 @@ Job *submit_job(Directory *from, const char *source, Directory *to, const char *
         pthread_mutex_lock(&mut);
 	job->next=pre_scan_list;
 	pre_scan_list=job;
+        if ( ++scans.jobs > scans.maxjobs ) scans.maxjobs=scans.jobs;
         pthread_mutex_unlock(&mut); 
         pthread_cond_broadcast(&cond);
 
@@ -376,14 +383,18 @@ int wait_for_job(Job *job) {
        while(job->state!=JOB_READY) {
                 if (job->state==JOB_RUNNING) {
                         /* We wait, but we could just as well run some job */
-		        pthread_cond_broadcast(&cond);
-		        pthread_cond_wait(&cond,&mut);
+                        if (!run_one_job()) {
+                                // Nothing to run. We have to wait.
+		                pthread_cond_broadcast(&cond);
+		                pthread_cond_wait(&cond,&mut);
+                        }
                 }
                 if (job->state==JOB_WAITING) {
                         run_job(job); // Run it ourselves
                 }
         }
         int ret=free_job(job);
+        scans.jobs--;
         pthread_mutex_unlock(&mut);
         return ret;
 }

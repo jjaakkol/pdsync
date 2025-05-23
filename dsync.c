@@ -208,11 +208,12 @@ static void show_progress(const char *str) {
     long long now=tv.tv_sec*1000000 + tv.tv_usec;
     if (now-last < 1000000) return;
 
-    fprintf(tty_stream,"PG: %7d files, %lld files/s, %lld MiB, %lld MiB/s : %s\n",
+    fprintf(tty_stream,"PG: %7d files, %lld files/s, %lld MiB, %lld MiB/s, %d jobs: %s\n",
         scans.entries_scanned,
         1000000LL * (scans.entries_scanned-last_scanned) / (now-last),
         opers.bytes_copied / (1024*1024),
         1000000LL * (opers.bytes_copied-last_bytes) / (now-last) / (1024*1024),
+        scans.jobs,
         str
     );
     last_scanned=scans.entries_scanned;
@@ -325,14 +326,17 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_skipped) {
 	printf("%8d directories skipped\n",scans->dirs_skipped);
     }
+    if (scans->maxjobs) {
+        printf("%8d maximum simultaneous jobs in queue.\n", scans ->maxjobs);
+    }
     if (scans->pre_scan_hits) {
-	printf("%8d --pre-scan hits\n",scans->pre_scan_hits);
+	printf("%8d directory prescan hits\n",scans->pre_scan_hits);
     }
     if (scans->pre_scan_wait_hits) {
-	printf("%8d --pre-scan wait hits\n",scans->pre_scan_wait_hits);
+	printf("%8d directory prescan wait hits\n",scans->pre_scan_wait_hits);
     }
     if (scans->pre_scan_misses) {
-	printf("%8d --pre-scan misses\n",scans->pre_scan_misses);
+	printf("%8d directory prescan misses\n",scans->pre_scan_misses);
     }	
     if (scans->pre_scan_dirs) {
 	printf("%8d pre scanned directorys\n",scans->pre_scan_dirs);

@@ -60,6 +60,9 @@ typedef struct {
     int pre_scan_dirs;
     int pre_scan_allocated;
     int pre_scan_used;
+
+    int jobs;
+    int maxjobs;
 } Scans;
 extern Scans scans;
 typedef struct JobStruct Job;
