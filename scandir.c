@@ -34,6 +34,37 @@ static int my_strcmp(const void *x, const void *y) {
     return strcmp(a,b);
 }
 
+const char *dir_path(const Directory *d) {
+        _Thread_local static char buf[MAXLEN];
+        _Thread_local static int len;
+        if (d) {
+                dir_path(d->parent);
+                len+=snprintf(buf+len,MAXLEN-len,"%s/",d->name);
+        } else len=sprintf(buf,".");
+        return buf; 
+}
+
+void show_error_dir(const char *message, const Directory *parent, const char *file) {
+        fprintf(stderr,"Error: %s : %s : %s%s\n",message,strerror(errno),dir_path(parent),file);
+}
+
+/* Free a directory structure */
+void d_freedir(Directory *dir) {
+    assert(dir->magick==0xDADDAD);
+    dir->magick=0xDADDEAD;
+    if (dir->handle>=0) closedir(dir->handle);
+    while(dir->entries>0) {
+	dir->entries--;
+	free(dir->array[dir->entries].name);
+	if (dir->array[dir->entries].link) free(dir->array[dir->entries].link);
+    }
+    free(dir->name);
+    free(dir->array);
+    dir->entries=-123; /* Magic value to debug a race */
+    free(dir);
+}
+
+
 /* scan_directory can be called from multiple threads */
 Directory *scan_directory(const char *name, Directory *parent) {
     DIR *d=NULL;
@@ -51,12 +82,12 @@ Directory *scan_directory(const char *name, Directory *parent) {
      /* TODO: should the O_NOATIME be a flag*/
     dfd=openat( (parent) ? dirfd(parent->handle) : AT_FDCWD , name, O_NOFOLLOW|O_RDONLY|O_DIRECTORY);
     if (dfd<0) {
-        show_error("openat",name);
+        show_error_dir("opendir",parent,name);
         return NULL;
     }
     d=fdopendir(dfd);
     if (!d) {
-        show_error("fdopenbdir", name);
+        show_error_dir("fdopenbdir", parent,name);
         close(dfd);
         return NULL;
     }
@@ -70,6 +101,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
 	goto fail;
     }
     nd->parent=parent;
+    nd->name=strdup(name);
     nd->handle=d;
 
     /* scan the directory */

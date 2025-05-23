@@ -45,6 +45,7 @@ typedef struct DirectoryStruct {
     int magick; /* 0xDADDAD to catch a race */
     DIR *handle;
     struct DirectoryStruct *parent;
+    char *name;
     int entries;
     Entry *array;
 } Directory;
@@ -82,6 +83,7 @@ void d_freedir(Directory *dir);
 Job *submit_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 int wait_for_job(Job *job);
 
-
+const char *dir_path(const Directory *d);
+void show_error_dir(const char *message, const Directory *parent, const char *file);
 
 

@@ -208,7 +208,7 @@ static void show_progress(const char *str) {
     long long now=tv.tv_sec*1000000 + tv.tv_usec;
     if (now-last < 1000000) return;
 
-    fprintf(tty_stream,"PG: %7d files, %lld files/s, %lld MiB, %lld MiB/s, %d jobs: %s\n",
+    fprintf(tty_stream,"PG: %7d files | %5lld files/s | %lld MiB | %lld MiB/s | %d jobs: %s\n",
         scans.entries_scanned,
         1000000LL * (scans.entries_scanned-last_scanned) / (now-last),
         opers.bytes_copied / (1024*1024),
@@ -396,20 +396,6 @@ static void print_opers(const Opers *stats) {
     }
 }
 
-void d_freedir(Directory *dir) {
-    assert(dir->magick==0xDADDAD);
-    dir->magick=0xDADDEAD;
-    if (dir->handle>=0) closedir(dir->handle);
-    while(dir->entries>0) {
-	dir->entries--;
-	free(dir->array[dir->entries].name);
-	if (dir->array[dir->entries].link) free(dir->array[dir->entries].link);
-    }
-    free(dir->array);
-    dir->entries=-123; /* Magic value to debug a race */
-    free(dir);
-}
-
 int remove_hierarchy(const char *dir, Directory *parent) {
     struct stat thisdir;
     Directory *del=NULL;
@@ -500,7 +486,7 @@ int copy_regular(Directory *from,
 
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
-	        show_error2("open","NOPATH",source);
+	        show_error_dir("open",from,source);
 	        goto fail;
         }
         /* offset -1 means that this is the first job operating on this file */
@@ -684,34 +670,8 @@ int create_target(Directory *from,
 	    opers.symlinks_created++;
 	}
 
-        // Maybe don't even create sockets?
-#if 0
-
     } else if (S_ISSOCK(fentry->stat.st_mode)) {
-	/* Create a socket */
-	/* FIXME: hack around UNIX_PATH_MAX */
-	if (!preserve_devices) return -1;
-	if (verbose) {
-	    printf("SO: %s\n",todir);
-	}
-	if (!dryrun) {
-	    int s=socket(PF_UNIX,SOCK_STREAM,0);
-	    struct sockaddr_un addr;
-	    if (s<0) {
-		show_error("socket",todir);
-		goto fail;
-	    }
-	    memset(&addr,0,sizeof(addr));
-	    addr.sun_family=AF_UNIX;
-	    strncpy(addr.sun_path,todir,sizeof(addr.sun_path)-1);
-	    if (bind(s,&addr,sizeof(addr))<0) {
-		show_error("bind (socket creation errors ignored)",todir);
-	    } else {
-		opers.sockets_created++;
-	    }
-	    close(s);
-	}
-#endif	    
+        fprintf(stderr,"Ignoring socket : %s%s\n",dir_path(from),fentry->name);
 
     } else if (S_ISFIFO(fentry->stat.st_mode)) {
 	/* Create a FIFO */
@@ -725,26 +685,12 @@ int create_target(Directory *from,
 	}
 	opers.fifos_created++;
 
-        // Don't bother when device special files 
-#if 0
-    } else if (S_ISCHR(fentry->stat.st_mode) ||
-	S_ISBLK(fentry->stat.st_mode) ) {
-	/* Create a inode device */
-	if (!preserve_devices) return -1;
-	if (verbose) {
-	    printf("DE: %s\n",todir);
-	}
-	if (!dryrun && 
-	    mknod(todir,fentry->stat.st_mode,fentry->stat.st_rdev)<0) {
-	    show_error("mknod",todir);
-	    goto fail;
-	}
-	opers.devs_created++;
-#endif
-
+        // Don't bother with device special files 
+    } else if (S_ISCHR(fentry->stat.st_mode)) {
+        fprintf(stderr,"Ignoring character device : %s%s",dir_path(from),fentry->name);
     } else {
-	if (verbose) printf("UN: %s\n",source);
-	show_warning("Unknown file type ignored",source);
+	if (verbose) printf("UN: %s%s\n",dir_path(from),fentry->name);
+	show_warning("Unknown file type ignored in dir: ",dir_path(from));
     }   
     return 0;
 
@@ -983,7 +929,6 @@ int dsync(Directory *from_parent, const char *source,
 
     from=pre_scan_directory(source,from_parent);
     if (from==NULL) {
-	show_error("readdir",source);
 	opers.read_errors++;
 	goto fail;
     }
@@ -1178,7 +1123,7 @@ int dsync(Directory *from_parent, const char *source,
                         ) {
                                 /* skip, times were right */
                         } else if (utimensat(dirfd(to->handle),fentry->name,tmp,AT_SYMLINK_NOFOLLOW)<0) {
-                                show_error("utimensat",todir);
+                                show_error_dir("utimensat",to,fentry->name);
                                 opers.write_errors++;
                         } else opers.times++;
                 }
@@ -1188,16 +1133,17 @@ int dsync(Directory *from_parent, const char *source,
     }
 
     ret=0;
+    int failed_jobs=0;
 
 fail:
-    int failed_jobs=0;
+
     while(joblist) {
         if (wait_for_job(joblist->job)) failed_jobs++;
         struct JobList *tmp=joblist;
         joblist=joblist->next;
         free(tmp);
     }
-    if (failed_jobs>0) fprintf(stderr,"SD %ld: %d failed jobs\n",offset,failed_jobs);
+    if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);
     if (tofd>=0) close(tofd);
     if (from) d_freedir(from);
