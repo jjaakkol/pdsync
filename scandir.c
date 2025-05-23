@@ -51,6 +51,7 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 /* Free a directory structure */
 void d_freedir(Directory *dir) {
     assert(dir->magick==0xDADDAD);
+  
     dir->magick=0xDADDEAD;
     if (dir->handle>=0) closedir(dir->handle);
     while(dir->entries>0) {
@@ -58,9 +59,17 @@ void d_freedir(Directory *dir) {
 	free(dir->array[dir->entries].name);
 	if (dir->array[dir->entries].link) free(dir->array[dir->entries].link);
     }
-    free(dir->name);
     free(dir->array);
+
+    if (dir->refs>0) {
+        fprintf(stderr,"BUG: Caught a still referenced zombie Directory: %d refs %s%s\n",dir->refs,dir_path(dir),dir->name);
+    }
+    free(dir->name);
     dir->entries=-123; /* Magic value to debug a race */
+    if (dir->parent) { 
+        dir->parent->refs--;
+        if (dir->parent->magick==0xDADDEAD) fprintf(stderr,"BUG: Directory * parent is a zombie\n");
+    }
     free(dir);
 }
 
@@ -75,6 +84,8 @@ Directory *scan_directory(const char *name, Directory *parent) {
     int allocated=16;
     int entries=0;
     char **names=NULL;
+
+    assert(!parent || parent->magick!=0xDADDEAD);
 
     /* Assume that the parent has not freed yet by other threads. */
     assert(!parent || parent->magick==0xDADDAD);
@@ -103,11 +114,13 @@ Directory *scan_directory(const char *name, Directory *parent) {
     nd->parent=parent;
     nd->name=strdup(name);
     nd->handle=d;
+    nd->refs=0;
+    if (nd->parent) nd->parent->refs++;
 
     /* scan the directory */
     while( (dent=readdir(d)) ) {
 	if (entries==allocated) {
-	    /* Need more space */
+	    /* Needreu more space */
 	    char **tmp_names=NULL;
 	    
 	    allocated+=allocated/2;
@@ -212,7 +225,7 @@ int free_job(Job *job) {
  * - if we know nothing of the directory or it is waiting in queue scan it in this thread.
  * - If it is already being scanned by another thread, wait for it. 
  * - If it has been already scanned by another thread use the result. 
- * - Launch directory scan jobs for subdirectories found.ACCESSPERMS
+ * - Launch directory scan jobs for subdirectories found.
  */
 Directory *pre_scan_directory(const char *path, Directory *parent) {
         Job *d=NULL;
@@ -336,35 +349,33 @@ Job *run_job(Job *job) {
 }
 
 /* Runs one job: can be called by a thread when waiting jobs to finish.
- * Assumes mutex is heald.ACCESSPERMS
+ * Assumes mutex is held.
+ * Try to held the job queue shorter by running scan jobs first. 
  */
  int run_one_job() {
         Job *j=pre_scan_list;
-        while(j) {
-	        /* Try to find a job to run */
-                switch (j->state) {
-                case SCAN_WAITING:
-                        j->state=SCAN_RUNNING;
-                        pthread_mutex_unlock(&mut);
-                        j->result=scan_directory(j->source,j->from);
-                        /* Don't keep prescanned directories open. */
-                        if (j->result) {
-                                if (j->result->handle) closedir(j->result->handle);
-                                j->result->handle=NULL;
-                        }
-                        pthread_mutex_lock(&mut);
-                        j->state=SCAN_READY;
-                        j=pre_scan_list;
-                        pthread_cond_broadcast(&cond);
-                        return 1;
-                case JOB_WAITING:
-                        run_job(j);
-                        j=pre_scan_list;
-                        pthread_cond_broadcast(&cond);
-                        return 1;
-                default:
-                        j=j->next;
+        while(j && j->state != SCAN_WAITING) j=j->next;
+        if (j) {
+                 j->state=SCAN_RUNNING;
+                pthread_mutex_unlock(&mut);
+                j->result=scan_directory(j->source,j->from);
+                /* Don't keep prescanned directories open. */
+                if (j->result) {
+                        if (j->result->handle) closedir(j->result->handle);
+                        j->result->handle=NULL;
                 }
+                pthread_mutex_lock(&mut);
+                j->state=SCAN_READY;
+                pthread_cond_broadcast(&cond);
+                return 1;
+        }
+
+        for(j=pre_scan_list;j && j->state!=JOB_WAITING; j=j->next);
+        if(j) {
+                run_job(j);
+                j=pre_scan_list;
+                pthread_cond_broadcast(&cond);
+                return 1;
         }
         return 0;
 

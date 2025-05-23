@@ -42,11 +42,12 @@ typedef struct {
 /* We keep the fd of all directories around until the directories are processed to be able to use 
    openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
 typedef struct DirectoryStruct {
-    int magick; /* 0xDADDAD to catch a race */
+    int magick; /* 0xDADDAD to catch a race, 0xDADDEAD to mark a zombie */
     DIR *handle;
     struct DirectoryStruct *parent;
     char *name;
     int entries;
+    int refs; 
     Entry *array;
 } Directory;
 
@@ -74,7 +75,9 @@ typedef int (JobCallback) (Directory *from,
 		 const char *target,
                  off_t offset);
 
+#if 0
 Directory *scan_directory(const char *name, Directory *parent);
+#endif
 void show_error(const char *why, const char *file);
 Directory *pre_scan_directory(const char *dir, Directory *parent);
 void start_job_threads(int threads);

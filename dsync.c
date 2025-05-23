@@ -1088,7 +1088,7 @@ int dsync(Directory *from_parent, const char *source,
                 }
                 if (uid!=-1 || gid!=-1) {
 		        if ( fchownat(dirfd(to->handle),fentry->name, uid, gid,AT_SYMLINK_NOFOLLOW)<0 ) {
-		                show_error("lchown",todir);
+		                show_error_dir("fchownat",to,fentry->name); 
 		                opers.write_errors++;
                         } else opers.chown++;
 		}
@@ -1098,7 +1098,7 @@ int dsync(Directory *from_parent, const char *source,
 		        !S_ISLNK(fentry->stat.st_mode) &&
                         (!tentry || fentry->stat.st_mode!=tentry->stat.st_mode) ) {
 		        if (fchmodat(dirfd(to->handle),fentry->name,fentry->stat.st_mode,AT_SYMLINK_NOFOLLOW)<0) {
-		                show_error("fchmodat",todir);
+		                show_error_dir("fchmodat",to,fentry->name);
 		                opers.write_errors++;
                         } else opers.chmod++;
 	        }
