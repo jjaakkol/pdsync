@@ -1166,6 +1166,15 @@ int dsync(Directory *from_parent, char *fromdir,
     return ret;
 }
 
+/* Hello world job to test job submission. */
+int hello_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset) {
+        printf("Hello world going to sleep %s %ld\n",source, offset);
+        sleep(1);
+        printf("Hello world waking up %s %ld\n",source, offset);
+        return 123;
+}
+
+
 int main(int argc, char *argv[]) {
 
     memset(&scans,0,sizeof(scans));
@@ -1225,7 +1234,13 @@ int main(int argc, char *argv[]) {
     }
     target_dir_len=strlen(target_dir);
 
+     // Subnt testing
+    Job *job=submit_job(NULL,"/HELLO/!",NULL,NULL,666,hello_job);
+ 
     dsync(NULL, s_frompath, NULL, s_topath);
+
+    // result testing
+    printf("job result %d\n",wait_for_job(job));
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);

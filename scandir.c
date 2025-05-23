@@ -23,6 +23,7 @@ typedef struct JobStruct {
     int ret;
 } Job;
 
+
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 Job *pre_scan_list=NULL;
@@ -343,13 +344,6 @@ void *job_queue_loop(void *arg) {
     /* Never return */
 }
 
-int hello_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset) {
-        printf("Hello world going to sleep %s %ld\n",source, offset);
-        sleep(1);
-        printf("Hello world waking up %s %ld\n",source, offset);
-        return 123;
-}
-
 Job *submit_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset, JobCallback *callback) {
         Job *job=calloc( sizeof (Job), 1);
         if (!job) {
@@ -398,8 +392,5 @@ void start_job_threads(int job_threads) {
                 }
         }
         printf("Started %d threads\n",job_threads);
-
-        Job *job=submit_job(NULL,"/HELLO/!",NULL,NULL,666,hello_job);
-        printf("job result %d\n",wait_for_job(job));
 }
 
