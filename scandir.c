@@ -344,7 +344,9 @@ void *job_queue_loop(void *arg) {
 }
 
 int hello_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset) {
-        printf("Hello world %s %ld\n",source, offset);
+        printf("Hello world going to sleep %s %ld\n",source, offset);
+        sleep(1);
+        printf("Hello world waking up %s %ld\n",source, offset);
         return 123;
 }
 
