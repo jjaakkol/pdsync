@@ -959,7 +959,7 @@ void save_link_info(const Entry *fentry, const char *path) {
 }
     
 int dsync(Directory *from_parent, const char *source, 
-        Directory *to_parent, const char *target) {
+        Directory *to_parent, const char *target, off_t offset) {
     struct stat cdir;
     int fromfd=-1;
     int tofd=-1;
@@ -969,19 +969,19 @@ int dsync(Directory *from_parent, const char *source,
     int ret=-1;
     int tolen=strlen(target);
     char todir[MAXLEN];
+    struct JobList {
+        Job *job;
+        struct JobList *next;
+    } *joblist=NULL;
 
     strncpy(todir,target,sizeof(todir));
+    //printf("DS %ld: %s\n",offset,todir);
 
     from=pre_scan_directory(source,from_parent);
     if (from==NULL) {
 	show_error("readdir",source);
 	opers.read_errors++;
 	goto fail;
-    }
-
-    if ( fchdir(dirfd(from->handle)) ) {
-        perror("fchdir");
-        exit(1);
     }
     if ( fstat(dirfd(from->handle),&cdir) < 0 ){
         perror("fstat");
@@ -1023,8 +1023,6 @@ int dsync(Directory *from_parent, const char *source,
 
 	snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
 	
-	assert(strncmp(target_dir,todir,target_dir_len)==0);
-
 	/* Lookup the existing file */
 	if (to) tentry=directory_lookup(to,todir+tolen+1);		
 
@@ -1108,12 +1106,23 @@ int dsync(Directory *from_parent, const char *source,
 	
 	} else if (S_ISDIR(fentry->stat.st_mode)) {
 	    /* All checks turned out green: we recurse into a subdirectory */
+
+            struct JobList *job=calloc(sizeof(*job),1);
+            if (!job) {
+                perror("calloc");
+                exit(1);
+            }
+            job->job=submit_job(from,fentry->name,to,fentry->name,offset+1,dsync);
+            job->next=joblist;
+            joblist=job;
+
+            #if 0
 	    dsync(from,fentry->name,to,todir);
             if ( fchdir(dirfd(from->handle)) ) {
                 perror("fchdir");
                 exit(1);
             }
-	    
+	    #endif 
 	}
 
 	/* Check if we need to update the inode bits */
@@ -1139,8 +1148,8 @@ int dsync(Directory *from_parent, const char *source,
 	        if (preserve_permissions && 
 		        !S_ISLNK(fentry->stat.st_mode) &&
                         (!tentry || fentry->stat.st_mode!=tentry->stat.st_mode) ) {
-		        if (chmod(todir,fentry->stat.st_mode)<0) {
-		                show_error("chmod",todir);
+		        if (fchmodat(dirfd(to->handle),fentry->name,fentry->stat.st_mode,AT_SYMLINK_NOFOLLOW)<0) {
+		                show_error("fchmodat",todir);
 		                opers.write_errors++;
                         } else opers.chmod++;
 	        }
@@ -1176,7 +1185,15 @@ int dsync(Directory *from_parent, const char *source,
 
     ret=0;
 
- fail:
+fail:
+    int failed_jobs=0;
+    while(joblist) {
+        if (wait_for_job(joblist->job)) failed_jobs++;
+        struct JobList *tmp=joblist;
+        joblist=joblist->next;
+        free(tmp);
+    }
+    if (failed_jobs>0) fprintf(stderr,"SD %ld: %d failed jobs\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);
     if (tofd>=0) close(tofd);
     if (from) d_freedir(from);
@@ -1256,7 +1273,7 @@ int main(int argc, char *argv[]) {
      // Subnt testing
     //Job *job=submit_job(NULL,"/HELLO/!",NULL,NULL,666,hello_job);
  
-    dsync(NULL, s_frompath, NULL, s_topath);
+    dsync(NULL, s_frompath, NULL, s_topath,0);
 
     // result testing
     //printf("job result %d\n",wait_for_job(job));
