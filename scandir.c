@@ -51,7 +51,7 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 /* Free a directory structure */
 void d_freedir(Directory *dir) {
     assert(dir->magick==0xDADDAD);
-  
+    scans.dirs_active--;
     dir->magick=0xDADDEAD;
     if (dir->handle>=0) closedir(dir->handle);
     while(dir->entries>0) {
@@ -180,6 +180,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
     /* Names is no longer needed */
     free(names);
     scans.dirs_scanned++;
+    if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
 
     nd->magick=0xDADDAD;
     return nd;

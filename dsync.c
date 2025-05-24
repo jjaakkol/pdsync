@@ -5,8 +5,11 @@
 #define O_NOFOLLOW 0
 #endif
 
-#define VERSION "1.11"
 
+#define VERSIONNUM "1.9"
+#define VERSION VERSIONNUM "-" MODTIME
+
+static char* const *static_argv;
 static int dryrun=0;
 static int delete=0;
 static int delete_only=0;
@@ -53,6 +56,7 @@ static struct stat target_stat;
 static struct stat source_stat;
 
 typedef struct {
+    struct timespec start_clock_boottime;
     int dirs_created;
     int files_copied;
     int entries_removed;
@@ -119,15 +123,15 @@ static struct option options[]= {
 };
 
 static void show_version() {
-    printf("dsync "VERSION" (C) 09.2000 - 03.2004 Jani Jaakkola (jjaakkol@cs.helsinki.fi)\n");
+    printf("pdsync "VERSION" (C) 09.2000 - 05.2025 Jani Jaakkola (jani.jaakkola@helsinki.fi)\n");
 }
 
 static void show_help() {
     int i;
     int len=0;
     show_version();
-    printf("Usage: dsync [options] <fromdir> <todir>\n");
-    printf("dsync is a tool for synchronization of two local directories.\n");
+    printf("Usage: pdsync [options] <fromdir> <todir>\n");
+    printf("pdsync is a tool for synchronization of two local directories.\n");
     printf("Options are:\n");
     for(i=0;options[i].name;i++) {
 	while((len>0 && len<26) || (len>26 && len<52)) {
@@ -178,49 +182,20 @@ static void show_warning(const char *why, const char *file) {
     }
 }
 
-/* Dumps recursively the path from EntryPath obeying privacy */
-#if 0 /* FIXME: EntryPath is gone and we have Directory */
-static int write_path(FILE *f, const EntryPath *path, const Entry *current) {
-    int p=0;
-    if (path) p=write_path(f,path->parent,path->entry);
-    
-    if (p) fprintf(f,"[x]");
-    else fprintf(f,"%s",current->name);
-    if (S_ISDIR(current->stat.st_mode)) fputc('/',f);
-
-    return p || (privacy && 
-		 current->stat.st_uid!=myuid &&
-		 !(current->stat.st_mode & S_IROTH));    
+const char *format_bytes(long long bytes, char output[static 32]) {
+        if (bytes < 1024) {
+                snprintf(output, 32, "%5lldB", bytes);
+        } else if (bytes < 1024 << 10 ) {
+                snprintf(output, 32, "%.1fKiB", bytes / 1024.0);
+        } else if (bytes < 1024 << 20) {
+                snprintf(output, 32, "%.1fMiB", bytes / (1024.0 * 1024));
+        } else if (bytes < 1024LL << 30) {
+                snprintf(output, 32, "%.1fGiB", bytes / (1024.0 * 1024 * 1024));
+        } else {
+                snprintf(output, 32, "%.1fTiB", bytes / (1024.0 * 1024 * 1024));
+        }
+        return output;
 }
-#endif 
-
-/* Shows the progress, obeying privacy options */
-static void show_progress(const char *str) {
-    static int last_scanned=0;
-    static long long last_bytes;
-    static long long last=0;
-    struct timeval tv;
-
-    if (!progress) return;
-
-    /* Once a second */    
-    gettimeofday(&tv,NULL);
-    long long now=tv.tv_sec*1000000 + tv.tv_usec;
-    if (now-last < 1000000) return;
-
-    fprintf(tty_stream,"PG: %7d files | %5lld files/s | %lld MiB | %lld MiB/s | %d jobs: %s\n",
-        scans.entries_scanned,
-        1000000LL * (scans.entries_scanned-last_scanned) / (now-last),
-        opers.bytes_copied / (1024*1024),
-        1000000LL * (opers.bytes_copied-last_bytes) / (now-last) / (1024*1024),
-        scans.jobs,
-        str
-    );
-    last_scanned=scans.entries_scanned;
-    last_bytes=opers.bytes_copied;
-    last=now;
-}
-
 	
 static int parse_options(int argc, char *argv[]) {
     int opt;
@@ -240,12 +215,12 @@ static int parse_options(int argc, char *argv[]) {
 	case 'n': dryrun=1; break;
 	case 'v': verbose++; break;
 	case 'P': 
-	    tty_stream=fopen("/dev/tty","w");
-	    if (!tty_stream) {
-		fprintf(stderr,"Could not open /dev/tty. Using stdout for progress reports.\n");
-		tty_stream=stderr;
-	    }	    
-	    progress++; 
+	        tty_stream=(tty_stream>0) ? tty_stream :fopen("/dev/tty","w");
+	        if (!tty_stream) {
+		        fprintf(stderr,"Could not open /dev/tty. Using stdout for progress reports.\n");
+		        tty_stream=stderr;
+	        }	    
+	        progress++; 
 	    break;
 	case 'V': show_version(); exit(0);
 	case 'h': show_help(); exit(0);
@@ -316,12 +291,13 @@ static int parse_options(int argc, char *argv[]) {
     return 0;
 }
 
+// Fixme: print to a given stream
 static void print_scans(const Scans *scans) {
     if (scans->dirs_scanned) {
-	printf("%8d directories scanned\n",scans->dirs_scanned);
+	printf("%8d directories read\n",scans->dirs_scanned);
     }
     if (scans->entries_scanned) {
-	printf("%8d inodes scanned\n",scans->entries_scanned);
+	printf("%8d inodes checked\n",scans->entries_scanned);
     }
     if (scans->dirs_skipped) {
 	printf("%8d directories skipped\n",scans->dirs_skipped);
@@ -339,63 +315,132 @@ static void print_scans(const Scans *scans) {
 	printf("%8d directory prescan misses\n",scans->pre_scan_misses);
     }	
     if (scans->pre_scan_dirs) {
-	printf("%8d pre scanned directorys\n",scans->pre_scan_dirs);
+	printf("%8d prescanned directorys\n",scans->pre_scan_dirs);
     }	
     if (scans->pre_scan_allocated) {
-	printf("%8d allocated pre scan entries\n",scans->pre_scan_allocated);
+	printf("%8d allocated prescan entries\n",scans->pre_scan_allocated);
     }	
     if (scans->pre_scan_used!=scans->pre_scan_allocated) {
-	printf("%8d unused pre scan entries\n",
+	printf("%8d unused prescan entries\n",
 	       scans->pre_scan_allocated-scans->pre_scan_used);
-    }	
+    }
+    if (scans->dirs_active_max) {
+	printf("%8d maximum number of prescanned directories.\n",
+	       scans->dirs_active_max);
+    }
+    if (scans->dirs_active) {
+	printf("%8d prescanned directories\n",
+	       scans->dirs_active);
+    }
+
 }
 
-static void print_opers(const Opers *stats) {
-    if (stats->dirs_created) {
-	printf("%8d directories created\n",stats->dirs_created);
-    }
+static void print_opers(FILE *stream, const Opers *stats) {
+         struct timespec now;
+
+        clock_gettime(CLOCK_BOOTTIME, &now);
+        long ns = (now.tv_sec*1000000000L + now.tv_nsec) - 
+                opers.start_clock_boottime.tv_sec*1000000000L + opers.start_clock_boottime.tv_nsec;
+        long s = ns / 1000000000L;
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
+
+        // I've spent too long this...
+        fprintf(stream,"# ");
+        for(int i=0;static_argv[i];i++) fprintf(stream," %s",static_argv[i]);
+        fprintf(stream,"\n");
+        fprintf(stream, "Walltime %02lld:%02lld:%02lld.%03lld,",
+                s / 3600LL, (s / 60LL) % 60, s % 60LL, ns/1000000LL % 1000 );
+        fprintf(stream, " CPUtime %02lld:%02lld:%02lld.%03lld (%.3f%%)\n",
+                now.tv_sec / 3600LL, (now.tv_sec / 60LL) % 60, now.tv_sec % 60LL, now.tv_nsec/1000000LL % 1000,
+                100.0 * (now.tv_sec*1000000000 + now.tv_nsec) / ns);
+        if (stats->dirs_created) {
+                fprintf(stream, "%8d directories created\n", stats->dirs_created);
+        }
     if (stats->dirs_removed) {
-	printf("%8d directories removed\n",stats->dirs_removed);
+        fprintf(stream, "%8d directories removed\n", stats->dirs_removed);
     }
     if (stats->entries_removed) {
-	printf("%8d entries removed\n",stats->entries_removed);
+        fprintf(stream, "%8d entries removed\n", stats->entries_removed);
     }
     if (stats->files_copied) {
-	printf("%8d files copied\n",stats->files_copied);
+        fprintf(stream, "%8d files copied, %.3ff/s\n", stats->files_copied,
+                stats->files_copied*1000000000.0/ns);
     }
-    if (stats->bytes_copied>100*1024*1024) {
-	printf("%8Ld MB data copied\n",stats->bytes_copied/1024/1024);
-    } else if (stats->bytes_copied) {
-	printf("%8Ld KB data copied\n",stats->bytes_copied/1024);
-    }
-    if (stats->sparse_bytes>100*1024*1024) {
-	printf("%8Ld MB in sparse blocks\n",stats->sparse_bytes/1024/1024);
-    } else if (stats->sparse_bytes) {
-	printf("%8Ld KB in sparse blocks\n",stats->sparse_bytes/1024);
+    char buf[32];
+    fprintf(stream, "%8s data copied, ", format_bytes(stats->bytes_copied, buf));
+    fprintf(stream, "%s/s\n", format_bytes(stats->bytes_copied*1000000000.0/ns,buf));
+    if (stats->sparse_bytes) {
+        fprintf(stream, "%8s data in sparse blocks\n", format_bytes(stats->sparse_bytes, buf));
     }
     if (stats->symlinks_created) {
-	printf("%8d symlinks created\n",stats->symlinks_created);
+        fprintf(stream, "%8d symlinks created\n", stats->symlinks_created);
     }
     if (stats->hard_links_created) {
-	printf("%8d hard links created\n",stats->hard_links_created);
+        fprintf(stream, "%8d hard links created\n", stats->hard_links_created);
     }
     if (stats->sockets_created) {
-	printf("%8d sockets created\n",stats->sockets_created);
+        fprintf(stream, "%8d sockets created\n", stats->sockets_created);
     }
     if (stats->fifos_created) {
-	printf("%8d fifos created\n",stats->fifos_created);
+        fprintf(stream, "%8d fifos created\n", stats->fifos_created);
     }
     if (stats->devs_created) {
-	printf("%8d devs created\n",stats->devs_created);
+        fprintf(stream, "%8d devs created\n", stats->devs_created);
     }
     if (stats->read_errors) {
-	printf("%8d errors on read\n",stats->read_errors);
+        fprintf(stream, "%8d errors on read\n", stats->read_errors);
     }
     if (stats->write_errors) {
-	printf("%8d errors on write\n",stats->write_errors);
+        fprintf(stream, "%8d errors on write\n", stats->write_errors);
     }
 }
 
+/* Shows the progress, obeying privacy options */
+static void show_progress(const char *path, const char *msg) {
+        static int last_scanned=0;
+        static long long last_bytes;
+        static long long last_ns=0;
+        static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+        char B[32];
+        char BpS[32];
+
+        if (!progress) return;
+ 
+        /* Multiple threads might call us*/
+        pthread_mutex_lock(&lock);
+ 
+        /* Run  once a second */
+        struct timespec now;
+        clock_gettime(CLOCK_BOOTTIME, &now);
+        long long now_ns = now.tv_nsec + now.tv_sec * 1000000000L;
+        if (now_ns - last_ns < 1000000000L) goto out; 
+
+        // I've spent too long this...
+        if (progress>=2) {
+                fprintf(tty_stream,"\033[2J\033[H### Pdsync syncing '%s' -> '%s'\n", s_frompath, s_topath);
+        }
+        long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
+        fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
+        fprintf(tty_stream,"%d files |%6lldf/s |%9s |%9s/s |%5d jobs | %s %s\n",
+                scans.entries_scanned,
+                1000000LL * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
+                format_bytes(opers.bytes_copied / (1024*1024),B),
+                format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
+                scans.jobs,
+                path,
+                msg
+        );
+        if (progress>2) print_opers(tty_stream,&opers);
+        if (progress>=3) print_scans(&scans);
+ 
+        last_scanned=scans.entries_scanned;
+        last_bytes=opers.bytes_copied;
+        last_ns=now_ns;
+        out:
+        pthread_mutex_unlock(&lock);  // Blocks if another thread holds the lock
+
+}
 int remove_hierarchy(const char *dir, Directory *parent) {
     struct stat thisdir;
     Directory *del=NULL;
@@ -426,6 +471,7 @@ int remove_hierarchy(const char *dir, Directory *parent) {
   
     for(i=0;i<del->entries;i++) {
 	struct stat file;
+        show_progress(target_dir,"unlinking");
 	if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
 	    show_error2("fstatat","PATHMISSING",del->array[i].name);
 	    goto fail;
@@ -590,7 +636,7 @@ int copy_regular(Directory *from,
         while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
                 opers.bytes_copied+=w;
                 towrite-=w;
-                show_progress("Copying a file.");
+                show_progress(target_dir,"copy");
         }
 	if (w<0) {
 		show_error("write",target);
@@ -937,7 +983,7 @@ int dsync(Directory *from_parent, const char *source,
         exit(1);
     }
   
-    if (from->entries>0) show_progress("Scanning a directory.");
+    if (from->entries>0) show_progress(target_dir,"readdir");
 
     to=pre_scan_directory(todir,to_parent);
 
@@ -963,7 +1009,7 @@ int dsync(Directory *from_parent, const char *source,
 	const Entry *tentry=NULL;
 
 	/* Progress output? */
-	show_progress(todir);
+	show_progress(target_dir,"syncing");
 	    
 	/* Check if this entry should be excluded */
 	if (should_exclude(from,fentry)) {
@@ -1152,15 +1198,6 @@ fail:
     return ret;
 }
 
-/* Hello world job to test job submission. */
-int hello_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset) {
-        printf("Hello world going to sleep %s %ld\n",source, offset);
-        sleep(1);
-        printf("Hello world waking up %s %ld\n",source, offset);
-        return 123;
-}
-
-
 int main(int argc, char *argv[]) {
 
     memset(&scans,0,sizeof(scans));
@@ -1168,7 +1205,7 @@ int main(int argc, char *argv[]) {
 
     /* Check the options */
     parse_options(argc, argv);
- 
+    static_argv=argv;
     if (safe_mode && !quiet) {
         printf("Running in in slower safe mode: removing access to users before updating targets.\n");
     }
@@ -1188,8 +1225,6 @@ int main(int argc, char *argv[]) {
 	memset(link_htable,0,sizeof(Link *)*hash_size);
     }
     
-    /* Start the pre-scanning thread if needed */
-    if (threads) start_job_threads(threads);
     
     if (realpath(argv[optind+1],s_topath)==NULL) {
         fprintf(stderr,"realpath() failed for %s\n",argv[optind+1]);
@@ -1220,25 +1255,30 @@ int main(int argc, char *argv[]) {
     }
     target_dir_len=strlen(target_dir);
 
-     // Subnt testing
-    //Job *job=submit_job(NULL,"/HELLO/!",NULL,NULL,666,hello_job);
+    // Record the starting timestamp
+    clock_gettime(CLOCK_BOOTTIME,&opers.start_clock_boottime);
+    // Start the helper threads specified with --threads 
+    if (threads) start_job_threads(threads);
  
     dsync(NULL, s_frompath, NULL, s_topath,0);
 
-    // result testing
-    //printf("job result %d\n",wait_for_job(job));
+    if (verbose) printf("FN: %s",s_topath);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
     }
     if (opers.write_errors) {
-	fprintf(stderr,"dsync was canceled because of write errors.\n");
+	fprintf(stderr,"pdsync was canceled because of write errors.\n");
     }
 
     if (!quiet) {
-	if (dryrun) printf("dryrun:\n");
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        char buf[64];
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
+        printf("Pdsync %s finished at %s\n",VERSION,buf);
+	print_opers(stdout,&opers);
 	print_scans(&scans);
-	print_opers(&opers);
     }
     if (dryrun) {
 	Opers dummy;

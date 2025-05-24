@@ -42,7 +42,7 @@ typedef struct {
 /* We keep the fd of all directories around until the directories are processed to be able to use 
    openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
 typedef struct DirectoryStruct {
-    int magick; /* 0xDADDAD to catch a race, 0xDADDEAD to mark a zombie */
+    int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
     DIR *handle;
     struct DirectoryStruct *parent;
     char *name;
@@ -65,6 +65,9 @@ typedef struct {
 
     int jobs;
     int maxjobs;
+
+    int dirs_active;
+    int dirs_active_max;
 } Scans;
 extern Scans scans;
 typedef struct JobStruct Job;
