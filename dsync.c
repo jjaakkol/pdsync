@@ -350,7 +350,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream,"\n");
         fprintf(stream, "Walltime %02lld:%02lld:%02lld.%03lld,",
                 s / 3600LL, (s / 60LL) % 60, s % 60LL, ns/1000000LL % 1000 );
-        fprintf(stream, " CPUtime %02lld:%02lld:%02lld.%03lld (%.3f%%)\n",
+        fprintf(stream, " CPUtime %02lld:%02lld:%02lld.%03lld (%.1f%%)\n",
                 now.tv_sec / 3600LL, (now.tv_sec / 60LL) % 60, now.tv_sec % 60LL, now.tv_nsec/1000000LL % 1000,
                 100.0 * (now.tv_sec*1000000000 + now.tv_nsec) / ns);
         if (stats->dirs_created) {
