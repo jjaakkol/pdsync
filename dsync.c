@@ -734,9 +734,11 @@ int create_target(Directory *from,
         // Don't bother with device special files 
     } else if (S_ISCHR(fentry->stat.st_mode)) {
         fprintf(stderr,"Ignoring character device : %s%s",dir_path(from),fentry->name);
+        return -1;
     } else {
 	if (verbose) printf("UN: %s%s\n",dir_path(from),fentry->name);
 	show_warning("Unknown file type ignored in dir: ",dir_path(from));
+        return -1;
     }   
     return 0;
 
