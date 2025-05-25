@@ -12,7 +12,7 @@ typedef enum {
 
 typedef struct JobStruct {
     Directory *from;
-    char *source;
+    Entry *fentry;
     Directory *to;
     const char *target;
     Directory *result;
@@ -224,8 +224,6 @@ int free_job(Job *job) {
         int ret=job->ret;
         job->next=NULL;
         job->state=JOB_INVALID;
-	free(job->source);
-        //free(job->target);
         free(job);
         return ret;
 }
@@ -258,7 +256,7 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
                 assert(d->state!=JOB_INVALID);
 
                 if (d->state==SCAN_WAITING || d->state==SCAN_RUNNING || d->state==SCAN_READY) {
-                        if (d->from==parent && strcmp(d->source,basename) ==0 ) break;
+                        if (d->from==parent && strcmp(d->fentry->name,basename) ==0 ) break;
                 }
         }
 
@@ -321,11 +319,11 @@ Directory *pre_scan_directory(const char *path, Directory *parent) {
         /* Now add the newly found directories to the job queue for prescanning*/
         for(i=result->entries-1; i>=0; i--) {
 	        if (S_ISDIR(result->array[i].stat.st_mode)) {
-                        if ( (d=calloc(sizeof(*d),1)) == NULL  || 
-                                (d->source=strdup(result->array[i].name)) == NULL ) {
+                        if ( (d=calloc(sizeof(*d),1)) == NULL ) {
                                 perror("malloc");
                                 exit(1);
                         }
+                        d->fentry=&result->array[i];
                         d->from=result;
 	                d->result=NULL;
 	                d->state=SCAN_WAITING;
@@ -351,7 +349,7 @@ Job *run_job(Job *job) {
         job->state=JOB_RUNNING;
         pthread_mutex_unlock(&mut);
         assert(job->from);
-        job->ret=job->callback(job->from,job->source,job->to,job->target,job->offset);
+        job->ret=job->callback(job->from,job->fentry,job->to,job->target,job->offset);
         pthread_mutex_lock(&mut);
         job->state=JOB_READY;
         return job;
@@ -367,7 +365,7 @@ Job *run_job(Job *job) {
         if (j) {
                  j->state=SCAN_RUNNING;
                 pthread_mutex_unlock(&mut);
-                j->result=scan_directory(j->source,j->from);
+                j->result=scan_directory(j->fentry->name,j->from);
                 /* Don't keep prescanned directories open. */
                 if (j->result) {
                         if (j->result->handle) closedir(j->result->handle);
@@ -406,7 +404,7 @@ void *job_queue_loop(void *arg) {
     /* Never return */
 }
 
-Job *submit_job(Directory *from, const char *source, Directory *to, const char *target, off_t offset, JobCallback *callback) {
+Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
         assert(from);
         Job *job=calloc( sizeof (Job), 1);
         if (!job) {
@@ -414,7 +412,7 @@ Job *submit_job(Directory *from, const char *source, Directory *to, const char *
                 exit(1);
         }
         job->from=from;
-        job->source=(source) ? strdup(source) : NULL;
+        job->fentry=fentry;
         job->to=to;
         job->target=target;
         job->offset=offset;

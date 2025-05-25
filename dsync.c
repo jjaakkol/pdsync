@@ -521,7 +521,7 @@ int remove_hierarchy(const char *dir, Directory *parent) {
 }    
 
 int copy_regular(Directory *from,
-		 const char *source, 
+		 Entry *fentry,
 		 Directory *to,
 		 const char *target,
                  off_t offset) {
@@ -534,7 +534,9 @@ int copy_regular(Directory *from,
         Job **jobs=NULL;
         int num_jobs=0;
 
-        assert(from && source && to && target);
+        assert(from && to && fentry);
+        const char *source=fentry->name;
+        assert(source && target);
 
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
@@ -564,7 +566,7 @@ int copy_regular(Directory *from,
                 num_jobs=from_stat.st_size/copy_job_size;
                 jobs=calloc( sizeof(Job *),num_jobs);
                 for (int i=num_jobs-1; i>=0; i--) {
-                        jobs[i]=submit_job(from,source,to,target,copy_job_size*i,copy_regular);
+                        jobs[i]=submit_job(from,fentry,to,target,copy_job_size*i,copy_regular);
                 }
                 int failed_jobs=0;
                 for (int i=0; i<num_jobs; i++) {
@@ -663,17 +665,21 @@ int copy_regular(Directory *from,
     goto end;
 }
 
+/* Create target is a Job callback */
 int create_target(Directory *from,
-                  const char *source,
+                  Entry *fentry,
                   Directory *to,
                   const char *target,
-		  const Entry *fentry) {
-    assert(from && source && to && target && fentry);
+		  off_t offset) {
+    assert(from && fentry && to && target);
+    const char *source=fentry->name;
+    assert(source);
+
     int tofd=dirfd(to->handle);
 
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
-	if (copy_regular(from,source,to,target,-1)<0) {
+	if (copy_regular(from, fentry, to, target, -1)<0) {
 	    return -1; // Copy failed
 	}
 
@@ -969,7 +975,7 @@ void skip_entry(Directory *to, const Entry *fentry) {
         }
 }
 
-int dsync(Directory *from_parent, const char *source, 
+int dsync(Directory *from_parent, Entry *parent_fentry, 
         Directory *to_parent, const char *target, off_t offset) {
     struct stat cdir;
     int fromfd=-1;
@@ -980,6 +986,7 @@ int dsync(Directory *from_parent, const char *source,
     int ret=-1;
     int tolen=strlen(target);
     char todir[MAXLEN];
+    const char *source=parent_fentry->name;
     struct JobList {
         Job *job;
         struct JobList *next;
@@ -1017,7 +1024,7 @@ int dsync(Directory *from_parent, const char *source,
     for(i=0;i<from->entries &&
 	    opers.write_errors==0
 	    ;i++) {
-	const Entry *fentry=&from->array[i];
+	Entry *fentry=&from->array[i];
 	const Entry *tentry=NULL;
 
 	/* Progress output? */
@@ -1074,7 +1081,7 @@ int dsync(Directory *from_parent, const char *source,
 		}
 	    }
 
-	    if (create_target(from,fentry->name,to,fentry->name,fentry)<0) {
+	    if (create_target(from, fentry, to, fentry->name, 0) <0) {
 		/* Failed to create new entry */
 		continue;
 	    }
@@ -1114,7 +1121,7 @@ int dsync(Directory *from_parent, const char *source,
                 perror("calloc");
                 exit(1);
             }
-            job->job=submit_job(from,fentry->name,to,fentry->name,offset+1,dsync);
+            job->job=submit_job(from, fentry, to, fentry->name, offset+1, dsync);
             job->next=joblist;
             joblist=job;
 	}
@@ -1234,11 +1241,16 @@ int main(int argc, char *argv[]) {
 	fprintf(stderr,"target '%s' is not a directory.\n",s_topath);
 	exit(1);
     }
-    if (chdir(argv[optind])<0) {
+    int dfd=open(argv[optind], O_DIRECTORY | O_RDONLY);
+    if (dfd<0) {
+        fprintf(stderr,"Could not open source '%s': %s", argv[optind], strerror(errno));
+        exit(1);
+    }
+    if (fchdir(dfd)<0) {
 	fprintf(stderr,"chdir('%s'): %s\n",argv[optind],strerror(errno));
 	exit(1);
     }
-    if (stat(".",&source_stat)<0 ||
+    if (fstat(dfd,&source_stat)<0 ||
 	!S_ISDIR(source_stat.st_mode)) {
 	fprintf(stderr,"stat('%s'): %s\n",argv[optind],strerror(errno));
 	exit(1);
@@ -1259,7 +1271,10 @@ int main(int argc, char *argv[]) {
     // Start the helper threads specified with --threads 
     if (threads) start_job_threads(threads);
  
-    dsync(NULL, s_frompath, NULL, s_topath,0);
+    Entry fentry;
+    init_entry(&fentry, dfd, ".");
+    close(dfd);
+    dsync(NULL, &fentry, NULL, s_topath,0);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
