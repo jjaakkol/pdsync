@@ -40,7 +40,7 @@ const char *dir_path(const Directory *d) {
         if (d) {
                 dir_path(d->parent);
                 len+=snprintf(buf+len,MAXLEN-len,"%s/",d->name);
-        } else len=sprintf(buf,".");
+        } else len=snprintf(buf,MAXLEN,"%s","");
         return buf; 
 }
 
@@ -50,7 +50,13 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 
 /* Free a directory structure */
 void d_freedir(Directory *dir) {
-    assert(dir->magick==0xDADDAD);
+        assert(dir->magick==0xDADDAD);
+
+        /* Check if the parent to be freed */
+        pthread_mutex_lock(&mut);
+        pthread_mutex_unlock(&mut);
+
+
     scans.dirs_active--;
     dir->magick=0xDADDEAD;
     if (dir->handle>=0) closedir(dir->handle);
@@ -73,6 +79,34 @@ void d_freedir(Directory *dir) {
     free(dir);
 }
 
+/* Initialize a Directory entry, with fstatat() */
+Entry *init_entry(Entry * entry, int dfd, char *name) {
+        memset(entry,0,sizeof (* entry));
+
+	if (fstatat(dfd, name, &entry->stat, AT_SYMLINK_NOFOLLOW)<0) {
+                entry->error=errno;
+	        show_error("fstatat",name);
+	} else if (S_ISLNK(entry->stat.st_mode)) {
+	    /* Read the symlink if there is one. FIXME: maybe skip this if we don't have --preserve-links */
+	    char linkbuf[MAXLEN];
+	    int link_len;
+
+	    if ( (link_len=readlinkat(dfd, name, linkbuf, sizeof(linkbuf)-1))<=0 ||
+		 (entry->link=malloc(link_len+1))==NULL ) {
+		/* Failed to read link. */
+		show_error("readlink",name);
+		/* FIXME: read errors is not visible here: 
+                opers.read_errors++; */
+	    } else {
+		/* Save the link */
+		memcpy(entry->link, linkbuf, link_len);
+		entry->link[link_len]=0;
+	    }
+	}
+        entry->name=name;
+        scans.entries_scanned++;
+        return entry;
+}
 
 /* scan_directory can be called from multiple threads */
 Directory *scan_directory(const char *name, Directory *parent) {
@@ -141,40 +175,14 @@ Directory *scan_directory(const char *name, Directory *parent) {
     /* Sort the directory entries */
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
 
-    nd->array=calloc(entries,sizeof(Entry));
+    nd->array=malloc(entries * sizeof(Entry));
     if (!nd->array) goto fail;
     nd->entries=entries;
 
-    /* Stat all entries */
+    /* Initialize all entries in a directory  */
     for (i=0;i<nd->entries;i++) {
 	assert(i==0 || my_strcmp(&names[i-1],&names[i])<0);
-
-        nd->array[i].state=ENTRY_GOOD;
-	if (fstatat(dfd, names[i],&nd->array[i].stat, AT_SYMLINK_NOFOLLOW)<0) {
-	    show_error("scan_directory lstat",names[i]);
-	    /* Mark the files which cannot be stat:ed */
-	    nd->array[i].state=ENTRY_STAT_FAILED;
-	} else if (S_ISLNK(nd->array[i].stat.st_mode)) {
-	    /* Read the link */
-	    char linkbuf[MAXLEN];
-	    int link_len;
-
-	    if ( (link_len=readlinkat(dfd,names[i],linkbuf,sizeof(linkbuf)-1))<=0 ||
-		 (nd->array[i].link=malloc(link_len+1))==NULL ) {
-		/* Failed to read link. */
-		show_error("readlink",names[i]);
-		/* FIXME: read errors is not vible here: 
-                opers.read_errors++; */
-		nd->array[i].link=NULL;
-		nd->array[i].state=ENTRY_READLINK_FAILED;
-	    } else {
-		/* Save the link */
-		memcpy(nd->array[i].link,linkbuf,link_len);
-		nd->array[i].link[link_len]=0;
-	    }
-	}
-	nd->array[i].name=names[i];
-        scans.entries_scanned++;
+        init_entry(&nd->array[i], dfd, names[i]);
     }
 
     /* Names is no longer needed */
@@ -453,6 +461,5 @@ void start_job_threads(int job_threads) {
 	                exit(1);
                 }
         }
-        printf("Started %d threads\n",job_threads);
 }
 
