@@ -28,14 +28,13 @@
 /* Maximum pathname lenght dsync can handle. FIXME: make dynamic */
 #define MAXLEN 16384
 
-enum EntryState { ENTRY_UNDEF=0, ENTRY_GOOD, 
-		  ENTRY_STAT_FAILED, ENTRY_READLINK_FAILED };
-
+/* Entry is a single entry in a directory */
 typedef struct {
     char *name;
     struct stat stat;
     char *link;
-    enum EntryState state;
+    int error;                  /* If there was a IO error with stat() */
+    struct JobStruct *job;      /* If this entry has a job associated to it */
 } Entry;
 
 
@@ -55,6 +54,7 @@ typedef struct {
     int dirs_scanned;
     int entries_scanned;
     int dirs_skipped;
+    int files_skipped;
     
     int pre_scan_hits;
     int pre_scan_wait_hits;

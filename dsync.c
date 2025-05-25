@@ -817,14 +817,14 @@ int remove_old_entries(Directory *from,
  * than to entry
  */
 int entry_changed(const Entry *from, const Entry *to) {
-    if (from->state != ENTRY_GOOD) {
+    if (from->error) {
 	/* If there was problems checking the file attributes, we probably
 	 * cannot access it anyway. So we return 'not changed' (and skip it).
 	 */
 	return 0;
     }
 
-    if (to->state != ENTRY_GOOD) {
+    if (to->error) {
 	/* Even when we cannot get the matching target file 
 	 * attributes, we might be able to unlink it. So we try to copy it.
 	 */
