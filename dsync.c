@@ -15,7 +15,7 @@ static int delete=0;
 static int delete_only=0;
 static int one_file_system=0;
 static int atime_preserve=0;
-static int verbose=0;
+static int itemize=0;
 static int quiet=0;
 static int preserve_permissions=0;
 static int preserve_owner=0;
@@ -74,6 +74,7 @@ typedef struct {
     int chown;
     int chmod;
     int times;
+    int items;
 } Opers; 
 Opers opers;
 Scans scans;
@@ -96,7 +97,7 @@ enum { ATIME_PRESERVE=255, PRIVACY=256, DELETE_ONLY=257,
 
 static struct option options[]= {
     { "dry-run",         0, NULL, 'n' },
-    { "verbose",         0, NULL, 'v' },
+    { "itemize",         0, NULL, 'i' },
     { "progress",        0, NULL, 'P' },
     { "version",         0, NULL, 'V' },
     { "help",            0, NULL, 'h' },
@@ -182,6 +183,13 @@ static void show_warning(const char *why, const char *file) {
     }
 }
 
+static void item(const char *i, const Directory *d, const char *name ) {
+        FILE *stream=stdout;
+        opers.items++;
+        if (!itemize) return;
+        fprintf(stream,"%s: %s%s\n",i,dir_path(d),name);
+}
+
 const char *format_bytes(long long bytes, char output[static 32]) {
         if (bytes < 1024) {
                 snprintf(output, 32, "%5lldB", bytes);
@@ -213,7 +221,7 @@ static int parse_options(int argc, char *argv[]) {
     while( (opt=getopt_long(argc, argv, ostr, options, NULL))>=0 ) {
 	switch(opt) {
 	case 'n': dryrun=1; break;
-	case 'v': verbose++; break;
+	case 'i': itemize++; break;
 	case 'P': 
 	        tty_stream=(tty_stream>0) ? tty_stream :fopen("/dev/tty","w");
 	        if (!tty_stream) {
@@ -247,7 +255,6 @@ static int parse_options(int argc, char *argv[]) {
                                 fprintf(stderr,"Invalid value given to --threads: '%s'\n",optarg);
                                 exit(1);
                         }
-                        printf("Using %d threads\n",threads);
                         break;
                 }
 	case 'a': 
@@ -301,6 +308,9 @@ static void print_scans(const Scans *scans) {
     }
     if (scans->dirs_skipped) {
 	printf("%8d directories skipped\n",scans->dirs_skipped);
+    }
+    if (scans->dirs_skipped) {
+        printf("%8d files skipped\n",scans->dirs_skipped);
     }
     if (scans->maxjobs) {
         printf("%8d maximum simultaneous jobs in queue.\n", scans ->maxjobs);
@@ -486,9 +496,7 @@ int remove_hierarchy(const char *dir, Directory *parent) {
 		/* FIXME: maybe continue here? */
 		goto fail;
 	    } else {
-                if (verbose) {
-		  printf("RM: %s/%s\n","PATHMISSING",del->array[i].name);
-	        }
+                item("RM",del,del->array[i].name);
 		opers.entries_removed++;
 	    }
 	}
@@ -496,9 +504,7 @@ int remove_hierarchy(const char *dir, Directory *parent) {
 
  cleanup:
     if (del) d_freedir(del);
-    if (verbose && !skip_rmdir) {
-	printf("RD: %s/%s\n","PATHMISSING",dir);
-    }
+    if (!skip_rmdir) item("RD",parent,dir);
     if (!dryrun && !skip_rmdir && unlinkat(dirfd(parent->handle),dir,AT_REMOVEDIR)<0) {
 	show_error2("rmdir","PATHMISSING",dir);
 	opers.write_errors++;
@@ -537,9 +543,7 @@ int copy_regular(Directory *from,
         }
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
-                if (verbose) {
-                        printf("CP: %s\n",target);       
-                }
+                item("CP",to,target);
                 /* Check for sparse file */
                 if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
 	                static int sparse_warned=0;
@@ -680,7 +684,7 @@ int create_target(Directory *from,
 	struct stat tmp;
 	if (!recursive) return -1;
 	if (fstatat(tofd,target,&tmp,0)<0) {
-	    if (verbose) printf("MD: %s\n",target);
+	    item("MD",to,target);
 	    if (!dryrun && mkdirat(tofd,target,0777)<0 ) {
 		show_error("mkdir",target);
 		goto fail;
@@ -707,7 +711,7 @@ int create_target(Directory *from,
     } else if (S_ISLNK(fentry->stat.st_mode)) {
 	/* Create symbolic link */
 	if (!preserve_links) return 0;
-	if (verbose) printf("SL: %s\n",target);
+	item("SL",to,target);
 	if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
 	    /* Symlink failed */
 	    show_error("symlink",target);
@@ -722,9 +726,7 @@ int create_target(Directory *from,
     } else if (S_ISFIFO(fentry->stat.st_mode)) {
 	/* Create a FIFO */
 	if (!preserve_devices) return -1;
-	if (verbose) {
-	    printf("FI: %s\n",target);
-	}
+	item("FI",to,target);
 	if (!dryrun && mkfifoat(tofd,target,0777)<0) {
 	    show_error("mkfifo",target);
 	    goto fail;
@@ -736,7 +738,6 @@ int create_target(Directory *from,
         fprintf(stderr,"Ignoring character device : %s%s",dir_path(from),fentry->name);
         return -1;
     } else {
-	if (verbose) printf("UN: %s%s\n",dir_path(from),fentry->name);
 	show_warning("Unknown file type ignored in dir: ",dir_path(from));
         return -1;
     }   
@@ -752,7 +753,7 @@ int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
         if (S_ISDIR(stat->st_mode)) {
                 remove_hierarchy(name,parent);
         } else {
-                if (verbose) printf("RM: %s\n",name);
+                item("RM:",parent,name);
                 if (!dryrun && unlinkat(dirfd(parent->handle),name,0)) {
                         show_error("unlink",name);
 	                opers.write_errors++;
@@ -786,6 +787,7 @@ static int should_exclude(const Directory *from, const Entry *entry) {
     while(e) {
 	if (regexec(&e->regex,entry->name,0,NULL,0)==0) {
 	    /* Matched */
+            if (itemize>1) item("EX",from,entry->name);
 	    return 1;
 	}
 	e=e->next;
@@ -888,6 +890,7 @@ int entry_changed(const Entry *from, const Entry *to) {
     return 1;
 }
 
+/* FIXME: hard links don't work now */
 int check_hard_link(const Entry *fentry, const char *target) {
     int hval=(fentry->stat.st_ino+fentry->stat.st_dev)%hash_size;
     Link *l;
@@ -912,7 +915,7 @@ int check_hard_link(const Entry *fentry, const char *target) {
 		show_warning("hard link source changed",l->target_name);
 	    }
 	}
-	if (verbose) {
+	if (itemize) {
 	    printf("HL: %s -> %s\n",target,l->target_name);
 	}
 	opers.hard_links_created++;
@@ -955,7 +958,17 @@ void save_link_info(const Entry *fentry, const char *path) {
     link->next=link_htable[hval];
     link_htable[hval]=link;
 }
-    
+
+void skip_entry(Directory *to, const Entry *fentry) {
+        if ( S_ISDIR(fentry->stat.st_mode) ) {
+	        scans.dirs_skipped++;
+	        if (itemize>2) item("SD",to,fentry->name);
+        } else {
+                scans.files_skipped++;
+                if (itemize>2) item("SF",to,fentry->name);
+        }
+}
+
 int dsync(Directory *from_parent, const char *source, 
         Directory *to_parent, const char *target, off_t offset) {
     struct stat cdir;
@@ -990,9 +1003,6 @@ int dsync(Directory *from_parent, const char *source,
     to=pre_scan_directory(todir,to_parent);
 
     if ( delete_only && to==NULL ) {
-	if (verbose) {
-	    printf("NE: %s\n",todir);
-	}
 	return 0;
     }
     if ( !dryrun && to==NULL) {
@@ -1015,6 +1025,7 @@ int dsync(Directory *from_parent, const char *source,
 	    
 	/* Check if this entry should be excluded */
 	if (should_exclude(from,fentry)) {
+                skip_entry(to,fentry);
                 continue;
         }
 
@@ -1041,9 +1052,7 @@ int dsync(Directory *from_parent, const char *source,
 		    }
 		}
 	    } else {
-		if (verbose>=2) {
-		    printf("OK: %s\n",todir);
-		}
+		if (itemize>=2) item("OK",to,todir);
 		continue;
 	    }
 	}
@@ -1080,27 +1089,23 @@ int dsync(Directory *from_parent, const char *source,
 	}
 
 
-	/* Check if we need to recurse into subdirectory */
+	/* Check if we should skip a subdirectory */
 	if (S_ISDIR(fentry->stat.st_mode) && 
-	    one_file_system && 
-	    fentry->stat.st_dev!=cdir.st_dev) {
-	    /* On different file system and one_file_system was given */
-	    scans.dirs_skipped++;
-	    if (verbose) printf("FS: %s\n",todir);
-	    
+	        one_file_system && 
+	        fentry->stat.st_dev!=cdir.st_dev)  {
+	        /* On different file system and one_file_system was given */
+                skip_entry(to,fentry);
 	} else if (fentry->stat.st_ino == target_stat.st_ino && 
 		   fentry->stat.st_dev == target_stat.st_dev ) {
-	    /* Attempt to recurse into destination directory */ 
-	    scans.dirs_skipped++;
-	    if (verbose) printf("TD: %s\n",todir);
-
+	        /* Attempt to recurse into target directory */
+                fprintf(stderr,"Skipping target directory in %s%s\n",dir_path(to),tentry->name);
+	        skip_entry(to,tentry);
 	} else if ( tentry && 
 		    tentry->stat.st_ino == source_stat.st_ino &&
 		    tentry->stat.st_dev == source_stat.st_dev ) {
-	    /* Attempt to recurse into source directory */
-	    scans.dirs_skipped++;
-	    if (verbose) printf("SD: %s\n",todir);
-	
+	        /* Attempt to recurse into source directory */
+                fprintf(stderr,"Skipping source directory in %s%s\n",dir_path(to),tentry->name);
+                skip_entry(to,tentry);
 	} else if (S_ISDIR(fentry->stat.st_mode)) {
 	    /* All checks turned out green: we recurse into a subdirectory */
 
@@ -1112,14 +1117,6 @@ int dsync(Directory *from_parent, const char *source,
             job->job=submit_job(from,fentry->name,to,fentry->name,offset+1,dsync);
             job->next=joblist;
             joblist=job;
-
-            #if 0
-	    dsync(from,fentry->name,to,todir);
-            if ( fchdir(dirfd(from->handle)) ) {
-                perror("fchdir");
-                exit(1);
-            }
-	    #endif 
 	}
 
 	/* Check if we need to update the inode bits */
@@ -1263,8 +1260,6 @@ int main(int argc, char *argv[]) {
     if (threads) start_job_threads(threads);
  
     dsync(NULL, s_frompath, NULL, s_topath,0);
-
-    if (verbose) printf("FN: %s",s_topath);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
