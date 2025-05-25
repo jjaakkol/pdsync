@@ -79,13 +79,24 @@ typedef int (JobCallback) (
 		const char *target,
                 off_t offset);
 
+/* It is a useless distraction to deal with out of memory. Just die. */
+static char *my_strdup(const char *str) {
+        char *s=strdup(str);
+        if (!s) {
+                fprintf(stderr,"Out of memory by strdup(). Exiting.");
+                exit(2);
+        }
+        return s;
+}
+
+#define strdup(X) ( use_my_strdup_instead(X) )
 #if 0
 Directory *scan_directory(const char *name, Directory *parent);
 #endif
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);
 
-Directory *pre_scan_directory(const char *dir, Directory *parent);
+Directory *pre_scan_directory(Directory *parent, Entry *dir);
 void start_job_threads(int threads);
 void d_freedir(Directory *dir);
 

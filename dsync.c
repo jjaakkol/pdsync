@@ -451,14 +451,14 @@ static void show_progress(const char *path, const char *msg) {
         pthread_mutex_unlock(&lock);  // Blocks if another thread holds the lock
 
 }
-int remove_hierarchy(const char *dir, Directory *parent) {
+int remove_hierarchy(Directory *parent, Entry *tentry) {
     struct stat thisdir;
     Directory *del=NULL;
     int i;
     int skip_rmdir=0;
     int dfd=-1;
  
-    del=pre_scan_directory(dir,parent);
+    del=pre_scan_directory(parent, tentry);
     if (!del) {
 	show_error("remove directory","PATHMISSING");
 	return -1;
@@ -488,7 +488,7 @@ int remove_hierarchy(const char *dir, Directory *parent) {
 	}
 	if (S_ISDIR(file.st_mode)) {
 	    int r;
-	    r=remove_hierarchy(del->array[i].name,del);
+	    r=remove_hierarchy(del, &del->array[i]);
 	    if (r<0) goto fail;
 	} else {
 	    if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
@@ -504,9 +504,9 @@ int remove_hierarchy(const char *dir, Directory *parent) {
 
  cleanup:
     if (del) d_freedir(del);
-    if (!skip_rmdir) item("RD",parent,dir);
-    if (!dryrun && !skip_rmdir && unlinkat(dirfd(parent->handle),dir,AT_REMOVEDIR)<0) {
-	show_error2("rmdir","PATHMISSING",dir);
+    if (!skip_rmdir) item("RD", parent, tentry->name);
+    if (!dryrun && !skip_rmdir && unlinkat( dirfd(parent->handle), tentry->name, AT_REMOVEDIR )<0) {
+	show_error2("rmdir","PATHMISSING", tentry->name);
 	opers.write_errors++;
         return -1;
     } else {
@@ -755,12 +755,13 @@ int create_target(Directory *from,
 }
 
 /* Remove one entry from a directory */
-int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
-        if (S_ISDIR(stat->st_mode)) {
-                remove_hierarchy(name,parent);
+int remove_entry(Directory *parent, Entry *tentry) {
+        const char *name=tentry->name;
+        if (S_ISDIR(tentry->stat.st_mode)) {
+                remove_hierarchy(parent, tentry);
         } else {
                 item("RM:",parent,name);
-                if (!dryrun && unlinkat(dirfd(parent->handle),name,0)) {
+                if (!dryrun && unlinkat(dirfd(parent->handle), name, 0)) {
                         show_error("unlink",name);
 	                opers.write_errors++;
 	                return -1;
@@ -770,7 +771,7 @@ int remove_entry(const char *name, Directory *parent, const struct stat *stat) {
     return 0;
 }
 
-const Entry *directory_lookup(const Directory *d, const char *name) {
+Entry *directory_lookup(const Directory *d, const char *name) {
     int s=0;
     int e=d->entries;
     int cmp=-1;
@@ -801,7 +802,7 @@ static int should_exclude(const Directory *from, const Entry *entry) {
     return 0;
 }
 
-/* Remove missing files and directories which exist in to but in from */
+/* Remove missing files and directories which exist in to but not in from */
 int remove_old_entries(Directory *from,
 		       Directory *to) {
     int to_i=0;
@@ -810,7 +811,7 @@ int remove_old_entries(Directory *from,
 	
 	if ( directory_lookup(from,to->array[to_i].name)==NULL) {
 	    /* Entry no longer exists in from and should be removed if --delete is in effect */
-	    remove_entry(to->array[to_i].name,to,&to->array[to_i].stat);
+	    remove_entry(to, &to->array[to_i]);
 	} 
 
 	if (opers.write_errors) return -1;
@@ -955,12 +956,7 @@ void save_link_info(const Entry *fentry, const char *path) {
 	link->target_ino=target.st_ino;
 	link->target_dev=target.st_dev;
     }
-    link->target_name=strdup(path);
-    if (!link->target_name) {
-	perror("strdup");
-	free(link);
-	return;
-    }
+    link->target_name=my_strdup(path);
     link->next=link_htable[hval];
     link_htable[hval]=link;
 }
@@ -986,7 +982,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int ret=-1;
     int tolen=strlen(target);
     char todir[MAXLEN];
-    const char *source=parent_fentry->name;
+
     struct JobList {
         Job *job;
         struct JobList *next;
@@ -995,7 +991,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     strncpy(todir,target,sizeof(todir));
     //printf("DS %ld: %s\n",offset,todir);
 
-    from=pre_scan_directory(source,from_parent);
+    from=pre_scan_directory(from_parent, parent_fentry);
     if (from==NULL) {
 	opers.read_errors++;
 	goto fail;
@@ -1007,7 +1003,13 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
   
     if (from->entries>0) show_progress(target_dir,"readdir");
 
-    to=pre_scan_directory(todir,to_parent);
+    /* We always have a parent_fentry, since that is where we are copying files from,
+     * but the inode we are copying to might not exist. Create a dummy Entry for it. */
+    Entry parent_tentry;
+    memset(&parent_tentry,0,sizeof(parent_tentry));
+    parent_tentry.name=my_strdup(target);
+    to=pre_scan_directory(to_parent, &parent_tentry);
+    free(parent_tentry.name);
 
     if ( delete_only && to==NULL ) {
 	return 0;
@@ -1025,7 +1027,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 	    opers.write_errors==0
 	    ;i++) {
 	Entry *fentry=&from->array[i];
-	const Entry *tentry=NULL;
+	Entry *tentry=NULL;
 
 	/* Progress output? */
 	show_progress(target_dir,"syncing");
@@ -1050,7 +1052,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 		    if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			/* Entry exists, but it is OK to remove it */
 			todir[tolen]='\0';
-			remove_entry(tentry->name,to,&tentry->stat);
+			remove_entry(to, tentry);
 			todir[tolen]='/';
 		    } else {
 			show_warning("Directory is in the way. Consider --delete",todir);
@@ -1260,10 +1262,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    target_dir=strdup(s_topath);
-    if (!target_dir) {
-	perror("strdup");
-    }
+    target_dir=my_strdup(s_topath);
     target_dir_len=strlen(target_dir);
 
     // Record the starting timestamp

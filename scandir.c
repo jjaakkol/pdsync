@@ -79,9 +79,10 @@ void d_freedir(Directory *dir) {
     free(dir);
 }
 
-/* Initialize a Directory entry, with fstatat() */
+/* Initialize a directory Entry. */
 Entry *init_entry(Entry * entry, int dfd, char *name) {
         memset(entry,0,sizeof (* entry));
+        entry->name=name;
 
 	if (fstatat(dfd, name, &entry->stat, AT_SYMLINK_NOFOLLOW)<0) {
                 entry->error=errno;
@@ -103,7 +104,6 @@ Entry *init_entry(Entry * entry, int dfd, char *name) {
 		entry->link[link_len]=0;
 	    }
 	}
-        entry->name=name;
         scans.entries_scanned++;
         return entry;
 }
@@ -146,7 +146,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
 	goto fail;
     }
     nd->parent=parent;
-    nd->name=strdup(name);
+    nd->name=my_strdup(name);
     nd->handle=d;
     nd->refs=0;
     if (nd->parent) nd->parent->refs++;
@@ -167,7 +167,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
 	    if (dent->d_name[1]==0) continue; 
 	    if (dent->d_name[1]=='.' && dent->d_name[2]==0) continue;
 	}
-	if ( (names[entries]=strdup(dent->d_name))==NULL ) goto fail;
+	if ( (names[entries]=my_strdup(dent->d_name))==NULL ) goto fail;
 	entries++;
     } 
 
@@ -229,18 +229,20 @@ int free_job(Job *job) {
 }
 
 /* Threaded directory scan:
- * - if we know nothing of the directory or it is waiting in queue scan it in this thread.
+ * - if we know nothing of the directory scan it in this thread
+ * - If it is already waiting in queue scan it in this thread.
  * - If it is already being scanned by another thread, wait for it. 
  * - If it has been already scanned by another thread use the result. 
  * - Launch directory scan jobs for subdirectories found.
  */
-Directory *pre_scan_directory(const char *path, Directory *parent) {
+Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         Job *d=NULL;
         Directory *result=NULL;
         const char *basename=NULL;
+        const char *path=dir->name;
         int i;
 
-        /* Lock the list */
+        /* Lock the job list */
         pthread_mutex_lock(&mut);
 
         /* The prescanner only knows the parent and the last compotent of the dir name */
