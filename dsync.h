@@ -125,5 +125,4 @@ int wait_for_entry(Entry *job);
 
 const char *dir_path(const Directory *d);
 void show_error_dir(const char *message, const Directory *parent, const char *file);
-
-
+int run_any_job(void);
