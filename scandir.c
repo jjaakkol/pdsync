@@ -382,7 +382,7 @@ out:
                 pthread_cond_broadcast(&cond);
                 return 1;
 
-        default:
+        default: return 0;
 
         }
         return 0;
