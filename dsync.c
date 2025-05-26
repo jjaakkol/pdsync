@@ -323,7 +323,11 @@ static void print_scans(const Scans *scans) {
     }
     if (scans->pre_scan_misses) {
 	printf("%8d directory prescan misses\n",scans->pre_scan_misses);
-    }	
+    }
+    if (scans->pre_scan_too_late>0) {
+        printf("%8d prescan was too late, directory already scanned\n",
+               scans->pre_scan_too_late);
+    }
     if (scans->pre_scan_dirs) {
 	printf("%8d prescanned directorys\n",scans->pre_scan_dirs);
     }	
@@ -373,7 +377,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream, "%8d entries removed\n", stats->entries_removed);
     }
     if (stats->files_copied) {
-        fprintf(stream, "%8d files copied, %.3ff/s\n", stats->files_copied,
+        fprintf(stream, "%8d files copied, %.1ff/s\n", stats->files_copied,
                 stats->files_copied*1000000000.0/ns);
     }
     char buf[32];
@@ -992,11 +996,14 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 
     /* We always have a parent_fentry, since that is where we are copying files from,
      * but the inode we are copying to might not exist. Create a dummy Entry for it. */
-    Entry parent_tentry;
-    memset(&parent_tentry,0,sizeof(parent_tentry));
-    parent_tentry.name=my_strdup(target);
-    to=pre_scan_directory(to_parent, &parent_tentry);
-    free(parent_tentry.name);
+    Entry dummy_tentry;
+    Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
+    if (parent_tentry==NULL) {
+        memset(&dummy_tentry,0,sizeof(dummy_tentry));
+        parent_tentry=&dummy_tentry;
+        parent_tentry->name=my_strdup(target);
+    }
+    to=pre_scan_directory(to_parent, parent_tentry);
 
     if ( delete_only && to==NULL ) {
 	return 0;

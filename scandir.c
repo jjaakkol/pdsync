@@ -325,6 +325,11 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         /* Now add the newly found directories to the job queue for prescanning*/
         for(i=result->entries-1; i>=0; i--) {
 	        if (S_ISDIR(result->array[i].stat.st_mode)) {
+                        if (result->array[i].job) {
+                                scans.pre_scan_too_late++;
+                                /* Already has a job, skip it */
+                                continue;
+                        }
                         Job *d=my_calloc(1,sizeof(*d));
                         d->fentry=&result->array[i];
                         result->array[i].job=d; /* Link the entry to the job */

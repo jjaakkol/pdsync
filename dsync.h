@@ -59,6 +59,7 @@ typedef struct {
     int pre_scan_hits;
     int pre_scan_wait_hits;
     int pre_scan_misses;
+    int pre_scan_too_late; /* Prescan was too late, the directory was already scanned by another thread */
     int pre_scan_dirs;
     int pre_scan_allocated;
     int pre_scan_used;
