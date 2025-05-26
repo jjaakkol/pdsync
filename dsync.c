@@ -436,7 +436,7 @@ static void show_progress(const char *path, const char *msg) {
         }
         long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d files |%6.1ff/s |%9s |%9s/s |%5d jobs | %s %s\n",
+        fprintf(tty_stream,"%d files |%7.1ff/s |%9s |%9s/s |%5d jobs | %s %s\n",
                 scans.entries_scanned,
                 1000000000.0 * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),

@@ -388,12 +388,14 @@ out:
         return 0;
  }
 
+ /* SCAN jobs won't generate more jobs to the job queue. The queue is better
+  * when it is full. */
  int run_any_job() {
-        for (Job *j=pre_scan_list; j && j->state==SCAN_WAITING; j=j->next) {
-                if (run_one_job(j)) return 1; // We ran a scan job
-        }
         for (Job *j=pre_scan_list; j && j->state==JOB_WAITING; j=j->next) {
                 if (run_one_job(j)) return 1; // We ran a callback job
+        }
+        for (Job *j=pre_scan_list; j && j->state==SCAN_WAITING; j=j->next) {
+                if (run_one_job(j)) return 1; // We ran a scan job
         }
         /* No jobs to run */
         return 0;
