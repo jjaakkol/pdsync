@@ -80,13 +80,32 @@ typedef int (JobCallback) (
                 off_t offset);
 
 /* It is a useless distraction to deal with out of memory. Just die. */
-static char *my_strdup(const char *str) {
+static inline char *my_strdup(const char *str) {
         char *s=strdup(str);
         if (!s) {
-                fprintf(stderr,"Out of memory by strdup(). Exiting.");
+                fprintf(stderr,"strdup() out of memory. Exiting with status 2.\n");
                 exit(2);
         }
         return s;
+}
+static inline void *my_calloc(size_t nmemb, size_t size) {
+    void *ptr = calloc(nmemb, size);
+    if (!ptr) {
+        fprintf(stderr,"Out of memory. Exiting with status 2.\n");
+        exit(2);
+    }
+    return ptr;
+}
+static inline void *my_malloc(size_t size) {
+        return my_calloc(1,size);
+}
+static inline void *my_realloc(void *ptr, size_t size) {
+    void *newptr = realloc(ptr, size);
+    if (!newptr) {
+        fprintf(stderr, "realloc() out of memory. Exiting with status 2.\n");
+        exit(2);
+    }
+    return newptr;
 }
 
 #define strdup(X) ( use_my_strdup_instead(X) )

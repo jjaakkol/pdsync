@@ -59,7 +59,7 @@ void d_freedir(Directory *dir) {
 
     scans.dirs_active--;
     dir->magick=0xDADDEAD;
-    if (dir->handle>=0) closedir(dir->handle);
+    if (dir->handle) closedir(dir->handle);
     while(dir->entries>0) {
 	dir->entries--;
 	free(dir->array[dir->entries].name);
@@ -92,14 +92,14 @@ Entry *init_entry(Entry * entry, int dfd, char *name) {
 	    char linkbuf[MAXLEN];
 	    int link_len;
 
-	    if ( (link_len=readlinkat(dfd, name, linkbuf, sizeof(linkbuf)-1))<=0 ||
-		 (entry->link=malloc(link_len+1))==NULL ) {
+	    if ( (link_len=readlinkat(dfd, name, linkbuf, sizeof(linkbuf)-1)) <=0 ) {
 		/* Failed to read link. */
 		show_error("readlink",name);
 		/* FIXME: read errors is not visible here: 
                 opers.read_errors++; */
 	    } else {
 		/* Save the link */
+                entry->link=my_malloc(link_len+1);
 		memcpy(entry->link, linkbuf, link_len);
 		entry->link[link_len]=0;
 	    }
@@ -154,12 +154,11 @@ Directory *scan_directory(const char *name, Directory *parent) {
     /* scan the directory */
     while( (dent=readdir(d)) ) {
 	if (entries==allocated) {
-	    /* Needreu more space */
+	    /* Allocate more space for names */
 	    char **tmp_names=NULL;
 	    
 	    allocated+=allocated/2;
-	    tmp_names=realloc(names,sizeof(char *)*allocated);
-	    if (!tmp_names) goto fail;
+	    tmp_names=my_realloc(names,sizeof(char *)*allocated);
 	    names=tmp_names;	    
 	}
 	if (dent->d_name[0]=='.') {
@@ -175,8 +174,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
     /* Sort the directory entries */
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
 
-    nd->array=malloc(entries * sizeof(Entry));
-    if (!nd->array) goto fail;
+    nd->array=my_malloc(entries * sizeof(Entry));
     nd->entries=entries;
 
     /* Initialize all entries in a directory  */
@@ -187,6 +185,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
 
     /* Names is no longer needed */
     free(names);
+    names=NULL;
     scans.dirs_scanned++;
     if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
 
@@ -196,12 +195,13 @@ Directory *scan_directory(const char *name, Directory *parent) {
     fail:
     /* Something did not work out. Clean up */
     if (nd) {
-	int i;
-	for(i=0;i<nd->entries;i++) {
-	    if (nd->array[i].link) free(nd->array[i].link);
-	}
-	if (nd->array) free(nd->array);
-	free(nd);
+        if (nd->array) {
+                for(int i=0; nd->array && i<nd->entries;i++) {
+                        if (nd->array[i].name) free(nd->array[i].name);
+	                if (nd->array[i].link) free(nd->array[i].link);
+                }
+	        free(nd->array);
+        }
     }
     while(entries>0) {
 	entries--;
@@ -218,6 +218,7 @@ int free_job(Job *job) {
         if (job==pre_scan_list) pre_scan_list=job->next;
         else {
                 Job *prev=pre_scan_list;
+                assert(prev); // the job must be in the list
                 while (prev->next != job) prev=prev->next;
                 prev->next=job->next;
         }
@@ -305,8 +306,13 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                         d_freedir(result);
                         return NULL;
                 }
-                result->handle=fdopendir(dfd);
-                assert(result->handle);
+                if (! (result->handle=fdopendir(dfd)) ) {
+                        show_error("fdopendir",path);
+                        close(dfd);
+                        d_freedir(result);
+                        return NULL;
+                }
+
         } else {
 	        /* The directory was not in queue or was not started. Scan it in this thread*/
 	        scans.pre_scan_misses++;
@@ -321,11 +327,9 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         /* Now add the newly found directories to the job queue for prescanning*/
         for(i=result->entries-1; i>=0; i--) {
 	        if (S_ISDIR(result->array[i].stat.st_mode)) {
-                        if ( (d=calloc(sizeof(*d),1)) == NULL ) {
-                                perror("malloc");
-                                exit(1);
-                        }
+                        d=my_calloc(1,sizeof(*d));
                         d->fentry=&result->array[i];
+                        result->array[i].job=d; /* Link the entry to the job */
                         d->from=result;
 	                d->result=NULL;
 	                d->state=SCAN_WAITING;
@@ -368,7 +372,7 @@ Job *run_job(Job *job) {
                  j->state=SCAN_RUNNING;
                 pthread_mutex_unlock(&mut);
                 j->result=scan_directory(j->fentry->name,j->from);
-                /* Don't keep prescanned directories open. */
+                /* Don't keep prescanned directories open to conserve filedescriptos */
                 if (j->result) {
                         if (j->result->handle) closedir(j->result->handle);
                         j->result->handle=NULL;
@@ -408,11 +412,8 @@ void *job_queue_loop(void *arg) {
 
 Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
         assert(from);
-        Job *job=calloc( sizeof (Job), 1);
-        if (!job) {
-                perror("calloc");
-                exit(1);
-        }
+        Job *job=my_calloc(1, sizeof (Job));
+
         job->from=from;
         job->fentry=fentry;
         job->to=to;
