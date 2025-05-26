@@ -531,7 +531,6 @@ int copy_regular(Directory *from,
         int sparse_copy=0;
         int ret=0;
         off_t copy_job_size=128*1024*1024;
-        Job **jobs=NULL;
         int num_jobs=0;
 
         assert(from && to && fentry);
@@ -543,9 +542,12 @@ int copy_regular(Directory *from,
 	        show_error_dir("open",from,source);
 	        goto fail;
         }
+
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
                 item("CP",to,target);
+                opers.files_copied++;
+
                 /* Check for sparse file */
                 if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
 	                static int sparse_warned=0;
@@ -554,31 +556,26 @@ int copy_regular(Directory *from,
                                 sparse_warned++;
                         }
 	        }
+                close(fromfd); /* prevent leak */
+
 	        sparse_copy=preserve_sparse;
+
                 if (dryrun) {
-                        opers.files_copied++;
 	                opers.bytes_copied+=from_stat.st_size;
-                        close(fromfd);
                         return 0;
                 }
 
                 /* Start the other copy threads from the first thread */
-                num_jobs=from_stat.st_size/copy_job_size;
-                jobs=calloc( sizeof(Job *),num_jobs);
-                for (int i=num_jobs-1; i>=0; i--) {
-                        jobs[i]=submit_job(from,fentry,to,target,copy_job_size*i,copy_regular);
-                }
-                int failed_jobs=0;
+                num_jobs=from_stat.st_size/copy_job_size+1;
                 for (int i=0; i<num_jobs; i++) {
-                        assert(jobs[i]);
-                        if (wait_for_job(jobs[i])!=0) failed_jobs++;
+                        submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                 }
-                free(jobs);
-                if (failed_jobs) fprintf(stderr,"%d failed copy jobs for %s",failed_jobs,target);
-                /* Let this thread copy the last bits */
-                offset=num_jobs*copy_job_size;
-
+                /* Let it run asynchronously */
+                // ret|= wait_for_entry(fentry);
+                return ret;
     }
+
+    //fprintf(stderr,"copy regular %ld %d\n",offset,ret);
 
     tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
     if(tofd<0) {
@@ -593,11 +590,7 @@ int copy_regular(Directory *from,
 	int bsize=4096; // 4096 is the default size of many fs blocks
         int r;
 
-	spbuf=malloc(bsize);
-        if (!spbuf) {
-            perror("malloc");
-	    goto fail;
-        }
+	spbuf=my_malloc(bsize);
 	
         /* Read and skip blocks with only zeros */
 	while( (r=read(fromfd,spbuf,bsize)) > 0 ) {
@@ -651,8 +644,6 @@ int copy_regular(Directory *from,
 	}
     }
 
-    opers.files_copied++;
-
  end:
     if (fromfd>=0) {
 	close(fromfd);    
@@ -661,7 +652,7 @@ int copy_regular(Directory *from,
     return ret;
 
  fail:
-    ret= -1;
+    ret = 1;
     goto end;
 }
 
@@ -679,8 +670,9 @@ int create_target(Directory *from,
 
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
-	if (copy_regular(from, fentry, to, target, -1)<0) {
-	    return -1; // Copy failed
+	if (copy_regular(from, fentry, to, target, -1)!=0) {
+                show_error("copy regular",target);
+                goto fail;
 	}
 
     } else if (S_ISDIR(fentry->stat.st_mode)) {
@@ -760,7 +752,7 @@ int remove_entry(Directory *parent, Entry *tentry) {
         if (S_ISDIR(tentry->stat.st_mode)) {
                 remove_hierarchy(parent, tentry);
         } else {
-                item("RM:",parent,name);
+                item("RM",parent,name);
                 if (!dryrun && unlinkat(dirfd(parent->handle), name, 0)) {
                         show_error("unlink",name);
 	                opers.write_errors++;
@@ -983,11 +975,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int tolen=strlen(target);
     char todir[MAXLEN];
 
-    struct JobList {
-        Job *job;
-        struct JobList *next;
-    } *joblist=NULL;
-
     strncpy(todir,target,sizeof(todir));
     //printf("DS %ld: %s\n",offset,todir);
 
@@ -1116,21 +1103,13 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
                 fprintf(stderr,"Skipping source directory in %s%s\n",dir_path(to),tentry->name);
                 skip_entry(to,tentry);
 	} else if (S_ISDIR(fentry->stat.st_mode)) {
-	    /* All checks turned out green: we recurse into a subdirectory */
-
-            struct JobList *job=calloc(sizeof(*job),1);
-            if (!job) {
-                perror("calloc");
-                exit(1);
-            }
-            job->job=submit_job(from, fentry, to, fentry->name, offset+1, dsync);
-            job->next=joblist;
-            joblist=job;
+	    /* All checks turned out green: we start a job to recurse to subdirectory */
+            submit_job(from, fentry, to, fentry->name, offset+1, dsync);
 	}
 
 	/* Check if we need to update the inode bits */
 	if (!dryrun && !delete_only) {
-
+                if (fentry) wait_for_entry(fentry);
                 /* UID and GID */
                 uid_t uid=-1;
                 gid_t gid=-1;
@@ -1191,12 +1170,13 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 
 fail:
 
-    while(joblist) {
-        if (wait_for_job(joblist->job)) failed_jobs++;
-        struct JobList *tmp=joblist;
-        joblist=joblist->next;
-        free(tmp);
+    for(int i=0; from && i<from->entries; i++) {
+        if (wait_for_entry(&from->array[i])) failed_jobs++;
     }
+    for(int i=0; from && i<to->entries; i++) {
+        if (wait_for_entry(&to->array[i])) failed_jobs++;
+    }
+
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);
     if (tofd>=0) close(tofd);

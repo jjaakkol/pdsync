@@ -120,7 +120,7 @@ void start_job_threads(int threads);
 void d_freedir(Directory *dir);
 
 Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
-int wait_for_job(Job *job);
+int wait_for_entry(Entry *job);
 
 const char *dir_path(const Directory *d);
 void show_error_dir(const char *message, const Directory *parent, const char *file);
