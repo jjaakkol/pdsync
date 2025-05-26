@@ -237,33 +237,17 @@ int free_job(Job *job) {
  * - Launch directory scan jobs for subdirectories found.
  */
 Directory *pre_scan_directory(Directory *parent, Entry *dir) {
-        Job *d=NULL;
         Directory *result=NULL;
-        const char *basename=NULL;
         const char *path=dir->name;
         int i;
 
         /* Lock the job list */
         pthread_mutex_lock(&mut);
 
-        /* The prescanner only knows the parent and the last compotent of the dir name */
-        basename=path;
-        for (i=0; path[i]; i++) {
-                if (path[i]=='/') basename=path+i+1;
-        }
-        assert(basename[0]!='\0' && basename[0]!='/');
+        if (dir->job) {
+                Job *d=dir->job;
+                assert (d->state==SCAN_WAITING || d->state==SCAN_RUNNING || d->state==SCAN_READY);
 
-        /* Loop over the job queue to find matching scan job if any */
-        for (d=pre_scan_list; d; d=d->next) {
-                // printf("pre_scan %s %s\n",dir,d->dir);
-                assert(d->state!=JOB_INVALID);
-
-                if (d->state==SCAN_WAITING || d->state==SCAN_RUNNING || d->state==SCAN_READY) {
-                        if (d->from==parent && strcmp(d->fentry->name,basename) ==0 ) break;
-                }
-        }
-
-        if (d) {
 	        /* We found our prescan job. */
 	        switch(d->state) {
 	        case SCAN_WAITING:
@@ -288,6 +272,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                 d->state=SCAN_READY;
                 free_job(d);
                 d=NULL;
+                dir->job=NULL;
 	        scans.pre_scan_used++;
         }    
 
@@ -296,7 +281,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         /* Reopen the DIR * handle of prescanned directories. */
         if (result && result->handle==NULL) {
                 assert(result->parent && result->parent->magick==0xDADDAD && result->parent->handle);
-                int dfd=openat(dirfd(result->parent->handle),basename,O_DIRECTORY|O_RDONLY|O_NOFOLLOW);
+                int dfd=openat(dirfd(result->parent->handle), dir->name, O_DIRECTORY|O_RDONLY|O_NOFOLLOW);
                 struct stat dirstat,parentstat;
                 if (dfd<0 || 
                         fstatat(dfd,"..",&dirstat,AT_SYMLINK_NOFOLLOW)<0 || 
@@ -327,7 +312,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         /* Now add the newly found directories to the job queue for prescanning*/
         for(i=result->entries-1; i>=0; i--) {
 	        if (S_ISDIR(result->array[i].stat.st_mode)) {
-                        d=my_calloc(1,sizeof(*d));
+                        Job *d=my_calloc(1,sizeof(*d));
                         d->fentry=&result->array[i];
                         result->array[i].job=d; /* Link the entry to the job */
                         d->from=result;
