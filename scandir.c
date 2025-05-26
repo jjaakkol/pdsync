@@ -50,33 +50,39 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 
 /* Free a directory structure */
 void d_freedir(Directory *dir) {
+        pthread_mutex_lock(&mut);
+
         assert(dir->magick==0xDADDAD);
 
-        /* Check if the parent to be freed */
-        pthread_mutex_lock(&mut);
+        while(dir->entries>0) {
+	        dir->entries--;
+	        if (dir->array[dir->entries].link) free(dir->array[dir->entries].link);
+                if (dir->array[dir->entries].job) {
+                        fprintf(stderr,"BUG: a job is still running in %s%s\n",dir_path(dir), dir->array[dir->entries].name);
+                }
+                free(dir->array[dir->entries].name);
+
+        }
+        free(dir->array);
+
+        dir->magick=0xDADDEAD;
+        if (dir->handle) closedir(dir->handle);
+
+        if (dir->refs>0) {
+                fprintf(stderr,"BUG: Caught a still referenced zombie Directory: %d refs %s%s\n",dir->refs,dir_path(dir),dir->name);
+        }
+        free(dir->name);
+        dir->entries=-123; /* Magic value to debug a race */
+        if (dir->parent) { 
+                dir->parent->refs--;
+                if (dir->parent->magick==0xDADDEAD) fprintf(stderr,"BUG: Directory * parent is a zombie\n");
+        }
+        free(dir);
+
+        scans.dirs_active--;
+
         pthread_mutex_unlock(&mut);
 
-
-    scans.dirs_active--;
-    dir->magick=0xDADDEAD;
-    if (dir->handle) closedir(dir->handle);
-    while(dir->entries>0) {
-	dir->entries--;
-	free(dir->array[dir->entries].name);
-	if (dir->array[dir->entries].link) free(dir->array[dir->entries].link);
-    }
-    free(dir->array);
-
-    if (dir->refs>0) {
-        fprintf(stderr,"BUG: Caught a still referenced zombie Directory: %d refs %s%s\n",dir->refs,dir_path(dir),dir->name);
-    }
-    free(dir->name);
-    dir->entries=-123; /* Magic value to debug a race */
-    if (dir->parent) { 
-        dir->parent->refs--;
-        if (dir->parent->magick==0xDADDEAD) fprintf(stderr,"BUG: Directory * parent is a zombie\n");
-    }
-    free(dir);
 }
 
 /* Initialize a directory Entry. */
@@ -187,9 +193,12 @@ Directory *scan_directory(const char *name, Directory *parent) {
     free(names);
     names=NULL;
     scans.dirs_scanned++;
-    if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
 
     nd->magick=0xDADDAD;
+    pthread_mutex_lock(&mut);
+    if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
+    pthread_mutex_unlock(&mut);
+    
     return nd;
 
     fail:
