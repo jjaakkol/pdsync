@@ -436,10 +436,10 @@ static void show_progress(const char *path, const char *msg) {
         }
         long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d files |%6lldf/s |%9s |%9s/s |%5d jobs | %s %s\n",
+        fprintf(tty_stream,"%d files |%6.1ff/s |%9s |%9s/s |%5d jobs | %s %s\n",
                 scans.entries_scanned,
-                1000000LL * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
-                format_bytes(opers.bytes_copied / (1024*1024),B),
+                1000000000.0 * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
+                format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
                 scans.jobs,
                 path,
@@ -737,10 +737,10 @@ int create_target(Directory *from,
 
         // Don't bother with device special files 
     } else if (S_ISCHR(fentry->stat.st_mode)) {
-        fprintf(stderr,"Ignoring character device : %s%s",dir_path(from),fentry->name);
+        fprintf(stderr,"Ignoring character device : %s%s\n",dir_path(from),fentry->name);
         return -1;
     } else {
-	show_warning("Unknown file type ignored in dir: ",dir_path(from));
+	show_warning("Unknown file type ignored in dir: \n",dir_path(from));
         return -1;
     }   
     return 0;
