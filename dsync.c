@@ -309,21 +309,21 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_skipped) {
 	printf("%8d directories skipped\n",scans->dirs_skipped);
     }
-    if (scans->dirs_skipped) {
-        printf("%8d files skipped\n",scans->dirs_skipped);
+    if (scans->files_skipped) {
+        printf("%8d files skipped\n",scans->files_skipped);
+    }
+    if (scans->jobs) {
+        printf("%8d total number of jobs run\n", scans->jobs);
     }
     if (scans->dirs_active>=0) {
         printf("%8d directories in memory now\n",scans->dirs_active);
     }
     if (scans->dirs_active_max) {
-	printf("%8d maximum number of directories in memory.\n",
+	printf("%8d maximum number of directories in memory\n",
 	       scans->dirs_active_max);
     }
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
-    }
-    if (scans->maxjobs) {
-        printf("%8d maximum simultaneous jobs in queue.\n", scans ->maxjobs);
     }
     if (scans->pre_scan_hits) {
 	printf("%8d directory prescan hits\n",scans->pre_scan_hits);
@@ -1177,7 +1177,7 @@ fail:
     }
 #endif
 
-    set_thread_status(file_path(from_parent,parent_fentry->name), "sync finished");
+    set_thread_status(file_path(from_parent,parent_fentry->name), "sync done");
 
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);

@@ -361,6 +361,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                         result->refs++; /* The directory is now referenced by the job */
 	                scans.pre_scan_allocated++;
                         scans.queued++;
+                        scans.jobs++;
                         if (scans.queued > scans.maxjobs) scans.maxjobs=scans.queued;
 	        }
         }
@@ -501,6 +502,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
                 fentry->job=job;
 
         }
+        scans.jobs++;
         if ( ++scans.queued > scans.maxjobs ) scans.maxjobs=scans.queued;
         pthread_cond_broadcast(&cond);
         pthread_mutex_unlock(&mut); 
@@ -546,7 +548,7 @@ int print_jobs(FILE *f) {
         int i=0;
 
         for (struct ThreadStatus *s=first_status; s; s=s->prev) {
-                fprintf(f,"Thread %d: %s\n", i, s->status);
+                fprintf(f,"Thread %3d: %s\n", i, s->status);
                 i++;
         }
         return 0;

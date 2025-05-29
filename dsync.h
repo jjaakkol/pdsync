@@ -67,6 +67,7 @@ typedef struct {
     int pre_scan_allocated;
     int pre_scan_used;
 
+    int jobs;
     int queued;
     int maxjobs;
 
