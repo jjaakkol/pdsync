@@ -313,7 +313,11 @@ static void print_scans(const Scans *scans) {
         printf("%8d files skipped\n",scans->dirs_skipped);
     }
     if (scans->dirs_active>=0) {
-        printf("%8d directories in memory\n",scans->dirs_active);
+        printf("%8d directories in memory now\n",scans->dirs_active);
+    }
+    if (scans->dirs_active_max) {
+	printf("%8d maximum number of directories in memory.\n",
+	       scans->dirs_active_max);
     }
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
@@ -344,15 +348,6 @@ static void print_scans(const Scans *scans) {
 	printf("%8d unused prescan entries\n",
 	       scans->pre_scan_allocated-scans->pre_scan_used);
     }
-    if (scans->dirs_active_max) {
-	printf("%8d maximum number of prescanned directories.\n",
-	       scans->dirs_active_max);
-    }
-    if (scans->dirs_active) {
-	printf("%8d prescanned directories\n",
-	       scans->dirs_active);
-    }
-
 }
 
 static void print_opers(FILE *stream, const Opers *stats) {
@@ -678,8 +673,7 @@ int create_target(Directory *from,
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
 	if (copy_regular(from, fentry, to, target, -1)!=0) {
-                show_error("copy regular",target);
-                goto fail;
+                return -1; // copy-regular handles error counters
 	}
 
     } else if (S_ISDIR(fentry->stat.st_mode)) {
@@ -982,9 +976,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int tolen=strlen(target);
     char todir[MAXLEN];
 
-    set_thread_status("sync running", file_path(from_parent,parent_fentry->name));
+    set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
     strncpy(todir,target,sizeof(todir));
-    //printf("DS %ld: %s\n",offset,todir);
 
     from=pre_scan_directory(from_parent, parent_fentry);
     if (from==NULL) {
@@ -1175,14 +1168,16 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int failed_jobs=0;
 
 fail:
+#if 0
     for(int i=0; from && i<from->entries; i++) {
         if (wait_for_entry(&from->array[i])) failed_jobs++;
     }
     for(int i=0; to && i<to->entries; i++) {
         if (wait_for_entry(&to->array[i])) failed_jobs++;
     }
+#endif
 
-    set_thread_status("sync finished", file_path(from_parent,parent_fentry->name));
+    set_thread_status(file_path(from_parent,parent_fentry->name), "sync finished");
 
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);

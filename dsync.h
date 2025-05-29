@@ -133,7 +133,7 @@ const char *file_path(const Directory *d, const char *f);
 void show_error_dir(const char *message, const Directory *parent, const char *file);
 int run_any_job();
 int print_jobs(FILE *f);
-void set_thread_status(const char *status, const char *file);
+void set_thread_status(const char *file, const char *status);
 void show_progress();
 int dir_openat(Directory *parent, const char *name);
 int dir_getfd(Directory *d);

@@ -95,7 +95,6 @@ void d_freedir_locked(Directory *dir) {
 
         dir->refs--;
         if (dir->refs>0) {
-                //fprintf(stderr,"BUG: Dir still has references. Keeping it: %d refs %s%s\n",dir->refs,dir_path(dir),dir->name);
                 return;
         }
         scans.dirs_active--;
@@ -115,10 +114,7 @@ void d_freedir_locked(Directory *dir) {
 
         free(dir->name);
         dir->entries=-123; /* Magic value to debug a race */
-        if (dir->parent) { 
-                dir->parent->refs--;
-                if (dir->parent->magick==0xDADDEAD) fprintf(stderr,"BUG: Directory * parent is a zombie\n");
-        }
+        if (dir->parent) d_freedir_locked(dir->parent);
         free(dir);
 }
 
@@ -344,7 +340,6 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         scans.dirs_scanned++;
         if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
         scans.entries_active+=result->entries;            
-        scans.dirs_active++;
 
         /* Now add the newly found directories to the job queue for pre scan */
         for(i=result->entries-1; i>=0; i--) {
