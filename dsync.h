@@ -44,6 +44,8 @@ typedef struct {
 typedef struct DirectoryStruct {
     int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
     DIR *handle;
+    int fd;
+    struct stat stat;
     struct DirectoryStruct *parent;
     char *name;
     int entries;
@@ -133,3 +135,5 @@ int run_any_job();
 int print_jobs(FILE *f);
 void set_thread_status(const char *status, const char *file);
 void show_progress();
+int dir_openat(Directory *parent, const char *name);
+int dir_getfd(Directory *d);

@@ -56,6 +56,38 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
         fprintf(stderr,"Error: %s : %s : %s%s\n",message,strerror(errno),dir_path(parent),file);
 }
 
+/* gets a file handle to Directory, possibly reopening it */
+int dir_getfd_unlocked(Directory *d) {
+        if (d->fd<0) {
+                int fd=dir_openat(d->parent, d->name);
+                struct stat s;
+                if (fd<0 || fstat(fd,&s)<0 ||
+                        s.st_ino != d->stat.st_ino ||
+                        s.st_dev != d->stat.st_dev) {
+                                show_error_dir("Directory changed or unavailable", d, d->name);
+                                if (fd>=0) close(fd);
+                                d->fd=-1;
+                }
+                d->fd=fd;
+        }
+        return d->fd;
+}
+
+/* Opens a file or directory, hopefully safely  */
+int dir_openat(Directory *parent, const char *name) {
+        int pfd= (parent) ? dir_getfd_unlocked(parent) : AT_FDCWD;
+        int dfd=openat(pfd, name, O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NOATIME);
+        if (dfd<0 && errno==EPERM) dfd=openat(pfd, name, O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
+        if (dfd<0) show_error_dir("dir_openat", parent, name);
+        return dfd;
+}
+
+int dir_getfd(Directory *d) {
+        pthread_mutex_lock(&mut); // TODO: this mutex should be in Directory, not global
+        d->fd=dir_getfd_unlocked(d);
+        pthread_mutex_unlock(&mut);
+        return d->fd;
+}
 
 /* Free a directory structure, including its finished jobs */
 void d_freedir_locked(Directory *dir) {
@@ -163,35 +195,25 @@ Directory *scan_directory(const char *name, Directory *parent) {
     char **names=NULL;
 
     assert(!parent || parent->magick!=0xDADDEAD);
-
-    /* Assume that the parent has not freed yet by other threads. */
     assert(!parent || parent->magick==0xDADDAD);
 
-     /* TODO: should the O_NOATIME be a flag*/
-    dfd=openat( (parent) ? dirfd(parent->handle) : AT_FDCWD , name, O_NOFOLLOW|O_RDONLY|O_DIRECTORY);
-    if (dfd<0) {
-        show_error_dir("opendir",parent,name);
-        exit(1); /* FIXME: this needs to be handled better */
-    }
-    d=fdopendir(dfd);
-    if (!d) {
-        show_error_dir("fdopenbdir", parent,name);
-        close(dfd);
+    if ( (dfd=dir_openat(parent, name))<0 ||
+         (d=fdopendir(dfd))==NULL) {
+                show_error_dir("scan_directory", parent,name);
+                if (dfd>=0) close(dfd);     
         return NULL;
     }
 
-    if ( (names=malloc(sizeof(char *)*allocated)) ==NULL) {
-	goto fail;
-    }
+    names=my_calloc(allocated, sizeof(char*));
 
     /* Allocate the Directory structure */
-    if ( ! (nd=malloc(sizeof(Directory))) ) {
-	goto fail;
-    }
+    nd=my_calloc(1,sizeof(Directory));
     nd->parent=parent;
     nd->name=my_strdup(name);
     nd->handle=d;
+    nd->fd=dfd;
     nd->refs=1; /* The directory is now referenced once */
+    if (fstat(dfd, &nd->stat)<0) goto fail;
 
     /* scan the directory */
     while( (dent=readdir(d)) ) {
@@ -212,11 +234,10 @@ Directory *scan_directory(const char *name, Directory *parent) {
 	entries++;
     } 
 
-    /* TODO: maybe stat the directories first, then sort them */
-    /* Sort the directory entries */
+    /* scandir might be faster, if done in inode order. */    
     qsort(names,entries,sizeof(names[0]),my_strcmp);    
 
-    nd->array=my_malloc(entries * sizeof(Entry));
+    nd->array=my_calloc(entries, sizeof(Entry));
     nd->entries=entries;
 
     /* Initialize all entries in a directory  */
@@ -228,20 +249,9 @@ Directory *scan_directory(const char *name, Directory *parent) {
     /* Names is no longer needed */
     free(names);
     names=NULL;
-    scans.dirs_scanned++;
-
+    
     nd->magick=0xDADDAD;
 
-    /* * TODO: We could move stats protection to pre_scan_directory() and
-     * then we would not need to lock the mutex here, but that would
-     * require more changes in the code.
-     */
-    pthread_mutex_lock(&mut);
-    if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
-    scans.entries_active+=entries;            
-    scans.dirs_active++;
-    pthread_mutex_unlock(&mut);
-    
     return nd;
 
     fail:
@@ -287,6 +297,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
 	        case SCAN_WAITING:
 	                /* The job for this directory has not started yet. We run it in this thread later */
                         scans.queued--;
+                        scans.pre_scan_misses++;
                         d->state=SCAN_READY;
 	                break;
 	        case SCAN_RUNNING:
@@ -307,43 +318,35 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                 free_job(dir->job);
 
                 pthread_cond_broadcast(&cond); /* wake up anyone who was waiting for this */
-        }    
-
-        pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
+        } else scans.pre_scan_misses++;
 
         /* Reopen the DIR * handle of prescanned directories. */
         if (result && result->handle==NULL) {
-                assert(result->parent && result->parent->magick==0xDADDAD && result->parent->handle);
-                int dfd=openat(dirfd(result->parent->handle), dir->name, O_DIRECTORY|O_RDONLY|O_NOFOLLOW);
-                struct stat dirstat,parentstat;
-                if (dfd<0 || 
-                        fstatat(dfd,"..",&dirstat,AT_SYMLINK_NOFOLLOW)<0 || 
-                        fstat(dirfd(result->parent->handle),&parentstat)<0 ||
-                        dirstat.st_dev!=parentstat.st_dev || dirstat.st_ino != parentstat.st_ino) {
-                        show_error("directory has changed.",path);
+                assert(result->parent && result->parent->magick==0xDADDAD);
+                result->fd=dir_getfd_unlocked(result);
+                if (result->fd<0 || ! (result->handle=fdopendir(result->fd)) ) {
+                        show_error("pre_scan_directory",path);
                         d_freedir(result);
-                        return NULL;
-                }
-                if (! (result->handle=fdopendir(dfd)) ) {
-                        show_error("fdopendir",path);
-                        close(dfd);
-                        d_freedir(result);
-                        return NULL;
+                        goto out;
                 }
 
         } else {
-	        /* The directory was not in queue or was not started. Scan it in this thread*/
-	        scans.pre_scan_misses++;
-                // printf("Miss: %s %s\n",path,basename);
+	        /* The directory was not in queue or was not started. Scan it in this thread */
+                pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
 	        result=scan_directory(path,parent);
+                pthread_mutex_lock(&mut); /* Need mutex to add new jobs */
         }
 
-        pthread_mutex_lock(&mut); /* Need mutex to add new jobs */
-   
         if (result==NULL) goto out;
         if (result->parent) result->parent->refs++;
 
-        /* Now add the newly found directories to the job queue for prescanning*/
+        /* Lots of stats gathered */
+        scans.dirs_scanned++;
+        if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
+        scans.entries_active+=result->entries;            
+        scans.dirs_active++;
+
+        /* Now add the newly found directories to the job queue for pre scan */
         for(i=result->entries-1; i>=0; i--) {
 	        if (S_ISDIR(result->array[i].stat.st_mode)) {
                         if (result->array[i].job) {
@@ -389,6 +392,7 @@ out:
                 if (j->result) {
                         if (j->result->handle) closedir(j->result->handle);
                         j->result->handle=NULL;
+                        j->result->fd=-1;
                 }
                 pthread_mutex_lock(&mut);
                 set_thread_status(file_path(j->from, j->fentry->name) ,"scanned dir");
