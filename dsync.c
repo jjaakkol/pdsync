@@ -312,6 +312,12 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_skipped) {
         printf("%8d files skipped\n",scans->dirs_skipped);
     }
+    if (scans->dirs_active>=0) {
+        printf("%8d directories in memory\n",scans->dirs_active);
+    }
+    if (scans->dirs_freed) {
+        printf("%8d directories freed\n",scans->dirs_freed);
+    }
     if (scans->maxjobs) {
         printf("%8d maximum simultaneous jobs in queue.\n", scans ->maxjobs);
     }
@@ -325,7 +331,7 @@ static void print_scans(const Scans *scans) {
 	printf("%8d directory prescan misses\n",scans->pre_scan_misses);
     }
     if (scans->pre_scan_too_late>0) {
-        printf("%8d prescan was too late, directory already scanned\n",
+        printf("%8d directory prescan too late\n",
                scans->pre_scan_too_late);
     }
     if (scans->pre_scan_dirs) {
@@ -409,11 +415,11 @@ static void print_opers(FILE *stream, const Opers *stats) {
     }
 }
 
-/* Shows the progress, obeying privacy options */
-static void show_progress(const char *path, const char *msg) {
+static long long last_ns=0;
+/* Shows the progress, obeying privacy options. Called from a thread once a second. */
+void show_progress() {
         static int last_scanned=0;
         static long long last_bytes;
-        static long long last_ns=0;
         static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
         char B[32];
@@ -424,7 +430,6 @@ static void show_progress(const char *path, const char *msg) {
         /* Multiple threads might call us*/
         pthread_mutex_lock(&lock);
  
-        /* Run  once a second */
         struct timespec now;
         clock_gettime(CLOCK_BOOTTIME, &now);
         long long now_ns = now.tv_nsec + now.tv_sec * 1000000000L;
@@ -436,24 +441,23 @@ static void show_progress(const char *path, const char *msg) {
         }
         long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d files |%7.1ff/s |%9s |%9s/s |%5d jobs | %s %s\n",
+        fprintf(tty_stream,"%d files |%7.1ff/s |%9s |%9s/s |%5d queued |%3d idle |\n",
                 scans.entries_scanned,
                 1000000000.0 * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
-                scans.jobs,
-                path,
-                msg
+                scans.queued,
+                scans.idle_threads
         );
-        if (progress>2) print_opers(tty_stream,&opers);
+        if (progress>=2) print_opers(tty_stream,&opers);
         if (progress>=3) print_scans(&scans);
+        if (progress>4) print_jobs(tty_stream);
  
         last_scanned=scans.entries_scanned;
         last_bytes=opers.bytes_copied;
         last_ns=now_ns;
         out:
-        pthread_mutex_unlock(&lock);  // Blocks if another thread holds the lock
-
+        pthread_mutex_unlock(&lock);
 }
 int remove_hierarchy(Directory *parent, Entry *tentry) {
     struct stat thisdir;
@@ -485,7 +489,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
   
     for(i=0;i<del->entries;i++) {
 	struct stat file;
-        show_progress(target_dir,"unlinking");
+        set_thread_status(file_path(parent, del->array[i].name), "unlinking");
 	if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
 	    show_error2("fstatat","PATHMISSING",del->array[i].name);
 	    goto fail;
@@ -574,12 +578,11 @@ int copy_regular(Directory *from,
                 for (int i=0; i<num_jobs; i++) {
                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                 }
-                /* Let it run asynchronously */
-                // ret|= wait_for_entry(fentry);
+
                 return ret;
     }
 
-    //fprintf(stderr,"copy regular %ld %d\n",offset,ret);
+    set_thread_status(file_path(to,target),"copy");
 
     tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
     if(tofd<0) {
@@ -638,9 +641,7 @@ int copy_regular(Directory *from,
         off_t towrite=copy_job_size;
         while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
                 opers.bytes_copied+=w;
-                towrite-=w;
-                show_progress(target_dir,"copy");
-        }
+                towrite-=w;        }
 	if (w<0) {
 		show_error("write",target);
 		opers.write_errors++;
@@ -653,6 +654,8 @@ int copy_regular(Directory *from,
 	close(fromfd);    
     }
     if (tofd>=0) close(tofd);
+
+    set_thread_status(file_path(to,target),"copied");
     return ret;
 
  fail:
@@ -979,6 +982,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int tolen=strlen(target);
     char todir[MAXLEN];
 
+    set_thread_status("sync running", file_path(from_parent,parent_fentry->name));
     strncpy(todir,target,sizeof(todir));
     //printf("DS %ld: %s\n",offset,todir);
 
@@ -992,8 +996,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
         exit(1);
     }
   
-    if (from->entries>0) show_progress(target_dir,"readdir");
-
     /* We always have a parent_fentry, since that is where we are copying files from,
      * but the inode we are copying to might not exist. Create a dummy Entry for it. */
     Entry dummy_tentry;
@@ -1006,7 +1008,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     to=pre_scan_directory(to_parent, parent_tentry);
 
     if ( delete_only && to==NULL ) {
-	return 0;
+	goto fail;
     }
     if ( !dryrun && to==NULL) {
 	show_error("readdir",todir);
@@ -1022,9 +1024,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 	    ;i++) {
 	Entry *fentry=&from->array[i];
 	Entry *tentry=NULL;
-
-	/* Progress output? */
-	show_progress(target_dir,"syncing");
 	    
 	/* Check if this entry should be excluded */
 	if (should_exclude(from,fentry)) {
@@ -1176,19 +1175,22 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int failed_jobs=0;
 
 fail:
-
     for(int i=0; from && i<from->entries; i++) {
         if (wait_for_entry(&from->array[i])) failed_jobs++;
     }
-    for(int i=0; from && i<to->entries; i++) {
+    for(int i=0; to && i<to->entries; i++) {
         if (wait_for_entry(&to->array[i])) failed_jobs++;
     }
+
+    set_thread_status("sync finished", file_path(from_parent,parent_fentry->name));
 
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);
     if (tofd>=0) close(tofd);
+#
     if (from) d_freedir(from);
     if (to) d_freedir(to);
+
     todir[tolen]=0;
     return ret;
 }
@@ -1254,13 +1256,15 @@ int main(int argc, char *argv[]) {
 
     // Record the starting timestamp
     clock_gettime(CLOCK_BOOTTIME,&opers.start_clock_boottime);
-    // Start the helper threads specified with --threads 
-    if (threads) start_job_threads(threads);
- 
+
     Entry fentry;
     init_entry(&fentry, dfd, ".");
     close(dfd);
-    dsync(NULL, &fentry, NULL, s_topath,0);
+  
+    Job *job=submit_job(NULL, &fentry, NULL, s_topath, 0, dsync);
+
+    // start the threads and wait the submitted job to finish
+    start_job_threads(threads, job);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
@@ -1273,10 +1277,15 @@ int main(int argc, char *argv[]) {
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
         char buf[64];
+        tty_stream=stdout;
+        last_ns=0; /* Force progress to show */
+        show_progress();
+        //if (progress<2) print_opers(stdout,&opers);
+        //if (progress<3) print_scans(&scans);
+
         strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
         printf("Pdsync %s finished at %s\n",VERSION,buf);
-	print_opers(stdout,&opers);
-	print_scans(&scans);
+
     }
     if (dryrun) {
 	Opers dummy;

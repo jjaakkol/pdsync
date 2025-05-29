@@ -35,6 +35,7 @@ typedef struct {
     char *link;
     int error;                  /* If there was a IO error with stat() */
     struct JobStruct *job;      /* If this entry has a job associated to it */
+    struct DirectoryStruct *dir;
 } Entry;
 
 
@@ -64,11 +65,15 @@ typedef struct {
     int pre_scan_allocated;
     int pre_scan_used;
 
-    int jobs;
+    int queued;
     int maxjobs;
 
     int dirs_active;
+    int entries_active;
     int dirs_active_max;
+    int dirs_freed;
+
+    int idle_threads;
 } Scans;
 extern Scans scans;
 typedef struct JobStruct Job;
@@ -110,19 +115,21 @@ static inline void *my_realloc(void *ptr, size_t size) {
 }
 
 #define strdup(X) ( use_my_strdup_instead(X) )
-#if 0
 Directory *scan_directory(const char *name, Directory *parent);
-#endif
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);
 
 Directory *pre_scan_directory(Directory *parent, Entry *dir);
-void start_job_threads(int threads);
+void start_job_threads(int threads, Job *job);
 void d_freedir(Directory *dir);
 
 Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 int wait_for_entry(Entry *job);
 
 const char *dir_path(const Directory *d);
+const char *file_path(const Directory *d, const char *f);
 void show_error_dir(const char *message, const Directory *parent, const char *file);
-int run_any_job(void);
+int run_any_job();
+int print_jobs(FILE *f);
+void set_thread_status(const char *status, const char *file);
+void show_progress();
