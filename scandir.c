@@ -470,8 +470,8 @@ void *job_queue_loop(void *arg) {
 }
 
 /* Submit a job:
- * Add it last to the job queue of the Entry
- * if the entry queue was empty add it last to the global list
+ * Add it first to the job queue, so that we run jobs depth first.
+ * Depth fist lets us close open directories earlier and save file descriptors.
  */
 Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
         assert(fentry);
@@ -490,20 +490,17 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         if (job->from) job->from->refs++;
         if (job->to) job->to->refs++;
         if (fentry->job) {
+                /* Put it last to its own Entry queue */
                 Job *prev=fentry->job;
                 while (prev->next && prev->next->fentry == fentry) prev=prev->next;
                 job->next=prev->next;
                 prev->next=job;
         } else { 
-                Job *last=pre_scan_list;
-                job->next=NULL;
-                if (last) {
-                        while (last->next) last=last->next;
-                        last->next=job;
-                } else {
-                        pre_scan_list=job; // First job in the queue
-                }
-                fentry->job=job; 
+                /* Put it first to global queue, if there was not a fentry queue, to run jobs depth first */
+                job->next=pre_scan_list;
+                pre_scan_list=job;
+                fentry->job=job;
+
         }
         if ( ++scans.queued > scans.maxjobs ) scans.maxjobs=scans.queued;
         pthread_cond_broadcast(&cond);
