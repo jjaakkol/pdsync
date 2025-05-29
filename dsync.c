@@ -69,7 +69,7 @@ typedef struct {
     int devs_created;
     int hard_links_created;
     int read_errors;
-    int write_errors;
+    atomic_int a_write_errors;
     int no_space;
     int chown;
     int chmod;
@@ -149,6 +149,20 @@ static void show_help() {
 }
 
 
+void write_error(const char *why, const Directory *d, const char *file) {
+        atomic_fetch_add(&opers.a_write_errors, 1);
+        if (errno==ENOSPC && !delete) {
+                fprintf(stderr, "Out of space. Consider --delete to remove files.\n");
+                opers.no_space++;
+        }
+        fprintf(stderr,"Write error: %s %s%s: %s\n",
+                why,
+                (privacy) ? "[PRIVATE]":dir_path(d), file,
+                (errno==0) ? "" : strerror(errno));
+        fprintf(stderr,"Exiting immediately.\n");
+        exit(2);
+}
+
 void show_error(const char *why, const char *file) {
     if (errno==ENOSPC) {
 	opers.no_space++;
@@ -156,20 +170,6 @@ void show_error(const char *why, const char *file) {
     fprintf(stderr,"Error: %s %s: %s\n",why,
 	    (privacy) ? "[PRIVATE]":file,
 	    (errno==0) ? "" : strerror(errno));
-}
-
-static void show_error2(const char *why, const char *path, const char *file) {
-    if (errno==ENOSPC) {
-	opers.no_space++;
-    }
-    if (privacy) {
-	fprintf(stderr,"Error: %s [PRIVATE]: %s\n",why,
-		(errno==0) ? "" : strerror(errno));
-    } else {
-	fprintf(stderr,"Error: %s %s/%s: %s\n",why,
-		path,file,
-		(errno==0) ? "" : strerror(errno));
-    }
 }
 
 static void show_warning(const char *why, const char *file) {
@@ -405,8 +405,8 @@ static void print_opers(FILE *stream, const Opers *stats) {
     if (stats->read_errors) {
         fprintf(stream, "%8d errors on read\n", stats->read_errors);
     }
-    if (stats->write_errors) {
-        fprintf(stream, "%8d errors on write\n", stats->write_errors);
+    if (stats->a_write_errors) {
+        fprintf(stream, "%8d errors on write\n", stats->a_write_errors);
     }
 }
 
@@ -454,6 +454,7 @@ void show_progress() {
         out:
         pthread_mutex_unlock(&lock);
 }
+
 int remove_hierarchy(Directory *parent, Entry *tentry) {
     struct stat thisdir;
     Directory *del=NULL;
@@ -463,8 +464,8 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
  
     del=pre_scan_directory(parent, tentry);
     if (!del) {
-	show_error("remove directory","PATHMISSING");
-	return -1;
+    write_error("remove directory", parent, "PATHMISSING");
+    return -1;
     }
     dfd=dirfd(del->handle);
     fstat(dfd,&thisdir);
@@ -483,22 +484,22 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
     }
   
     for(i=0;i<del->entries;i++) {
-	struct stat file;
+    struct stat file;
         set_thread_status(file_path(parent, del->array[i].name), "unlinking");
-	if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
-	    show_error2("fstatat","PATHMISSING",del->array[i].name);
-	    goto fail;
-	}
-	if (S_ISDIR(file.st_mode)) {
-	    int r;
-	    r=remove_hierarchy(del, &del->array[i]);
-	    if (r<0) goto fail;
-	} else {
-	    if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
-		show_error2("unlinkat","PATHMISSING",del->array[i].name);
-		/* FIXME: maybe continue here? */
-		goto fail;
-	    } else {
+    if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
+        write_error("fstatat", del, del->array[i].name);
+        goto fail;
+    }
+    if (S_ISDIR(file.st_mode)) {
+        int r;
+        r=remove_hierarchy(del, &del->array[i]);
+        if (r<0) goto fail;
+    } else {
+        if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
+        write_error("unlinkat", del, del->array[i].name);
+        /* FIXME: maybe continue here? */
+        goto fail;
+        } else {
                 item("RM",del,del->array[i].name);
 		opers.entries_removed++;
 	    }
@@ -509,8 +510,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
     if (del) d_freedir(del);
     if (!skip_rmdir) item("RD", parent, tentry->name);
     if (!dryrun && !skip_rmdir && unlinkat( dirfd(parent->handle), tentry->name, AT_REMOVEDIR )<0) {
-	show_error2("rmdir","PATHMISSING", tentry->name);
-	opers.write_errors++;
+	write_error("rmdir", parent, tentry->name);
         return -1;
     } else {
 	opers.dirs_removed++;
@@ -519,7 +519,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
 
  fail:
     skip_rmdir=1;
-    opers.write_errors++;
+    write_error("remove_hierarchy", del, tentry->name);
     goto cleanup;
 }    
 
@@ -542,8 +542,8 @@ int copy_regular(Directory *from,
 
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
-	        show_error_dir("open",from,source);
-	        goto fail;
+    write_error("open", from, source);
+    goto fail;
         }
 
         /* offset -1 means that this is the first job operating on this file */
@@ -581,9 +581,8 @@ int copy_regular(Directory *from,
 
     tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
     if(tofd<0) {
-	show_error("open",target);
-	opers.write_errors++;
-	goto fail;
+        write_error("open", to, target);
+        goto fail;
     }
 	    
     if (sparse_copy) {
@@ -601,9 +600,8 @@ int copy_regular(Directory *from,
 	    if (written==bsize) {
 		/* Found a block of zeros */
 		if (lseek(tofd,bsize,SEEK_CUR)<0) {
-		    perror("lseek");
-		    opers.write_errors++;
-		    goto fail;
+                        write_error("lseek", to, target);
+                        goto fail;
 		}
 		opers.sparse_bytes+=written;
 	    } else {
@@ -612,9 +610,8 @@ int copy_regular(Directory *from,
 	    while (written<r) {
 		int w=write(tofd,spbuf+written,r-written);
 		if (w<0) {
-		    show_error("write",target);
-		    opers.write_errors++;
-		    goto fail;
+                        write_error("write", to, target);
+                        goto fail;
 		}
 		written+=w;
 		opers.bytes_copied+=w;
@@ -622,25 +619,24 @@ int copy_regular(Directory *from,
 	}
 	free(spbuf);
         if (r<0) {
-                show_error("read",source);
-                goto fail;
+            show_error_dir("read", from, source);
+            goto fail;
         }
 	
     } else {
 	/* Simple loop with no regard to filesystem block size or sparse blocks*/
         int w=0;
         if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
-                show_error("lseek",target);
-                goto fail;
+            write_error("lseek", to, target);
+            goto fail;
         }
         off_t towrite=copy_job_size;
         while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
                 opers.bytes_copied+=w;
                 towrite-=w;        }
 	if (w<0) {
-		show_error("write",target);
-		opers.write_errors++;
-		goto fail;
+                write_error("write", to, target);
+                goto fail;
 	}
     }
 
@@ -673,62 +669,55 @@ int create_target(Directory *from,
     if (S_ISREG(fentry->stat.st_mode)) {
 	/* Regular file: copy it */
 	if (copy_regular(from, fentry, to, target, -1)!=0) {
-                return -1; // copy-regular handles error counters
+            return -1; // copy-regular handles error counters
+	} else {
+	    return 0;
 	}
-
     } else if (S_ISDIR(fentry->stat.st_mode)) {
-	/* Directory: create the target directory.
-	 * We will be here regardless of whether the directory already 
-	 * existed or not. So we test it. */
 	struct stat tmp;
 	if (!recursive) return -1;
 	if (fstatat(tofd,target,&tmp,0)<0) {
 	    item("MD",to,target);
 	    if (!dryrun && mkdirat(tofd,target,0777)<0 ) {
-		show_error("mkdir",target);
-		goto fail;
+                        write_error("mkdir", to, target);
+                        goto fail;
 	    }
 	    opers.dirs_created++;
 	} else if (!dryrun) {
 	    if (!S_ISDIR(tmp.st_mode)) {
-		errno=0;
-		show_error("Target is not a directory",target);
-		goto fail;
+                errno=0;
+                write_error("Target is not a directory", to, target);
+                goto fail;
 	    }
 	    if (safe_mode) {
 		if (preserve_owner && fchown(tofd,0,0)<0) {
-		    show_error("fchown",target);
-		    goto fail;
+                    write_error("fchown", to, target);
+                    goto fail;
 		}
 		if (fchmod(tofd,0700)<0) {
-		    show_error("chmod",target);
-		    goto fail;
+                    write_error("chmod", to, target);
+                    goto fail;
 		}
 	    }
 	}
-
     } else if (S_ISLNK(fentry->stat.st_mode)) {
-	/* Create symbolic link */
 	if (!preserve_links) return 0;
 	item("SL",to,target);
 	if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
-	    /* Symlink failed */
-	    show_error("symlink",target);
-	    goto fail;
+            write_error("symlink", to, target);
+            goto fail;
 	} else {
 	    opers.symlinks_created++;
 	}
-
     } else if (S_ISSOCK(fentry->stat.st_mode)) {
         fprintf(stderr,"Ignoring socket : %s%s\n",dir_path(from),fentry->name);
 
     } else if (S_ISFIFO(fentry->stat.st_mode)) {
-	/* Create a FIFO */
 	if (!preserve_devices) return -1;
 	item("FI",to,target);
 	if (!dryrun && mkfifoat(tofd,target,0777)<0) {
-	    show_error("mkfifo",target);
-	    goto fail;
+            write_error("mkfifo", to, target);
+            goto fail;
 	}
 	opers.fifos_created++;
 
@@ -743,7 +732,6 @@ int create_target(Directory *from,
     return 0;
 
  fail:
-    opers.write_errors++;
     return -1;
 }
 
@@ -755,10 +743,9 @@ int remove_entry(Directory *parent, Entry *tentry) {
         } else {
                 item("RM",parent,name);
                 if (!dryrun && unlinkat(dirfd(parent->handle), name, 0)) {
-                        show_error("unlink",name);
-	                opers.write_errors++;
-	                return -1;
-	        }
+                    write_error("unlink", parent, name);
+                    return -1;
+                }
                 opers.entries_removed++;
         }
     return 0;
@@ -800,14 +787,11 @@ int remove_old_entries(Directory *from,
 		       Directory *to) {
     int to_i=0;
 
-    for(to_i=0; to && to_i < to->entries; to_i++) {
-	
+    for(to_i=0; to && to_i < to->entries; to_i++) {	
 	if ( directory_lookup(from,to->array[to_i].name)==NULL) {
 	    /* Entry no longer exists in from and should be removed if --delete is in effect */
 	    remove_entry(to, &to->array[to_i]);
-	} 
-
-	if (opers.write_errors) return -1;
+	}
     }
     return 0;
 }
@@ -859,14 +843,31 @@ int entry_changed(const Entry *from, const Entry *to) {
 	return 1;
     }
 
-    /* If size is different we need to copy the file */
+    /* If size is different we need to at least update the file */
     if (from->stat.st_size!=to->stat.st_size) {
         return 1;
     }
 
-    /* If from is newer by mtime it has changed. Fixme: handle nanosecond timestamps. We already copy them. */
+    /* If we have preserve time any change in mtime is applied */
+    if (preserve_time &&
+                (from->stat.st_mtime!=to->stat.st_mtime ||
+                from->stat.st_mtim.tv_nsec != to->stat.st_mtim.tv_nsec)) {
+        return 1;
+    }   
+
+    /* If we have --atime-preserve any change in atime is applied */
+    if (atime_preserve &&
+                (from->stat.st_atime!=to->stat.st_atime ||
+                from->stat.st_atim.tv_nsec != to->stat.st_atim.tv_nsec) ) {
+        return 1;
+    }       
+    /* If from is newer by mtime it has changed. */
     if (from->stat.st_mtime>to->stat.st_mtime) {
 	return 1;
+    }
+    if (from->stat.st_mtime == to->stat.st_mtime &&
+        from->stat.st_mtim.tv_nsec > to->stat.st_mtim.tv_nsec) {
+        return 1;
     }
 
     /* Regular file and we have found no reason to copy it.*/
@@ -906,6 +907,7 @@ int check_hard_link(const Entry *fentry, const char *target) {
 	/* Found the entry from hash table */
 	if (!dryrun) {
 	    if (link(l->target_name,target)<0) {
+                write_error("link", NULL, target);
 		show_error("link",target);
 		return 1;
 	    }
@@ -931,8 +933,8 @@ void save_link_info(const Entry *fentry, const char *path) {
     Link *link=NULL;
     struct stat target;
     if (!dryrun && lstat(path,&target)<0) {
+        write_error("save link info lstat failed (?)", NULL, path);
 	/* Should not happen (tm) */
-	    show_error("save link info lstat failed (?)",path);
 	return;
     }
     link=malloc(sizeof(Link));
@@ -1004,8 +1006,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 	goto fail;
     }
     if ( !dryrun && to==NULL) {
-	show_error("readdir",todir);
-	opers.write_errors++;
+	write_error("readdir", to_parent, todir);
 	goto fail;
     }
     
@@ -1013,7 +1014,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 
     /* Loop through the source directory entries */
     for(i=0;i<from->entries &&
-	    opers.write_errors==0
+	    opers.a_write_errors==0
 	    ;i++) {
 	Entry *fentry=&from->array[i];
 	Entry *tentry=NULL;
@@ -1037,12 +1038,9 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 		    !S_ISDIR(tentry->stat.st_mode)) {
 		    if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			/* Entry exists, but it is OK to remove it */
-			todir[tolen]='\0';
 			remove_entry(to, tentry);
-			todir[tolen]='/';
 		    } else {
-			show_warning("Directory is in the way. Consider --delete",todir);
-			opers.write_errors++;
+			write_error("Directory is in the way. Consider --delete", to, tentry->name);
 			continue;
 		    }
 		}
@@ -1120,9 +1118,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
                 }
                 if (uid!=-1 || gid!=-1) {
 		        if ( fchownat(dirfd(to->handle),fentry->name, uid, gid,AT_SYMLINK_NOFOLLOW)<0 ) {
-		                show_error_dir("fchownat",to,fentry->name); 
-		                opers.write_errors++;
-                        } else opers.chown++;
+                    write_error("fchownat", to, fentry->name);
+		        } else opers.chown++;
 		}
 
                 // Permissions 
@@ -1130,9 +1127,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 		        !S_ISLNK(fentry->stat.st_mode) &&
                         (!tentry || fentry->stat.st_mode!=tentry->stat.st_mode) ) {
 		        if (fchmodat(dirfd(to->handle),fentry->name,fentry->stat.st_mode,AT_SYMLINK_NOFOLLOW)<0) {
-		                show_error_dir("fchmodat",to,fentry->name);
-		                opers.write_errors++;
-                        } else opers.chmod++;
+                    write_error("fchmodat", to, fentry->name);
+		        } else opers.chmod++;
 	        }
 
 	    if ( (preserve_time || atime_preserve) && !S_ISLNK(fentry->stat.st_mode)) {
@@ -1155,8 +1151,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
                         ) {
                                 /* skip, times were right */
                         } else if (utimensat(dirfd(to->handle),fentry->name,tmp,AT_SYMLINK_NOFOLLOW)<0) {
-                                show_error_dir("utimensat",to,fentry->name);
-                                opers.write_errors++;
+                                write_error("utimensat", to, fentry->name);
                         } else opers.times++;
                 }
 
@@ -1168,15 +1163,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int failed_jobs=0;
 
 fail:
-#if 0
-    for(int i=0; from && i<from->entries; i++) {
-        if (wait_for_entry(&from->array[i])) failed_jobs++;
-    }
-    for(int i=0; to && i<to->entries; i++) {
-        if (wait_for_entry(&to->array[i])) failed_jobs++;
-    }
-#endif
-
     set_thread_status(file_path(from_parent,parent_fentry->name), "sync done");
 
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
@@ -1264,7 +1250,7 @@ int main(int argc, char *argv[]) {
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
     }
-    if (opers.write_errors) {
+    if (opers.a_write_errors) {
 	fprintf(stderr,"pdsync was canceled because of write errors.\n");
     }
 
@@ -1292,7 +1278,7 @@ int main(int argc, char *argv[]) {
 	    return 1;
 	}
     } else {
-	if (opers.read_errors==0 && opers.write_errors==0) {
+	if (opers.read_errors==0 && opers.a_write_errors==0) {
 	    /* No failures */
 	    return 0;
 	} else {

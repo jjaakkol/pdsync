@@ -21,9 +21,8 @@
 #include <dirent.h>
 #include <sys/sendfile.h>
 #include <sys/time.h>
-#ifdef HAVE_PTHREAD
 #include <pthread.h>
-#endif
+#include <stdatomic.h>
 
 /* Maximum pathname lenght dsync can handle. FIXME: make dynamic */
 #define MAXLEN 16384
