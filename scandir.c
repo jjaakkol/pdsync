@@ -11,17 +11,17 @@ typedef enum {
 } JobState;
 
 typedef struct JobStruct {
+    int ret;
+    Directory *to;
     int magick; /* 0x10b10b */
     Directory *from;
     Entry *fentry;
-    Directory *to;
     const char *target;
     Directory *result;
     JobState state;
     struct JobStruct *next;
     JobCallback *callback;
     off_t offset;
-    int ret;
 } Job;
 
 
@@ -104,6 +104,7 @@ void d_freedir_locked(Directory *dir) {
         while(dir->entries>0) {
 	        dir->entries--;
                 Entry *e=&dir->array[dir->entries];
+                assert(!e->job); // no job should be running on this entry
 	        if (e->link) free(e->link);
                 free(dir->array[dir->entries].name);
         }
@@ -129,24 +130,34 @@ int free_job(Job *job) {
         assert(job);
         assert(job->fentry);
         assert(job->state==JOB_READY || job->state==SCAN_READY);
+        assert(job->magick==0x10b10b);
+        for(Job *queue_job=pre_scan_list; queue_job; queue_job=queue_job->next) assert(queue_job->magick==0x10b10b);
 
-        /* Remove job from entry queue and global job queue */
-        if (job->fentry->job==job) job->fentry->job=job->next;
-        if (job==pre_scan_list) pre_scan_list=job->next;
+        /* Remove job from fentry queue  */
+        if (job->fentry->job==job && job->next && job->next->fentry==job->fentry)  {
+                job->fentry->job=job->next;
+        } else {
+                job->fentry->job=NULL;
+        }
+
+        /* Remove job from pre_scan_list */
+        if (pre_scan_list==job) pre_scan_list=job->next;
         else {
                 Job *prev=pre_scan_list;
-                assert(prev); // the job must be in the list
                 while (prev->next != job) prev=prev->next;
+                assert(prev); // the job must be in the list
                 prev->next=job->next;
         }
+
         /* Freedir counts references */
         if (job->from) d_freedir_locked(job->from);
         if (job->to) d_freedir_locked(job->to);
         int ret=job->ret;
         job->next=NULL;
         job->state=JOB_INVALID;
-        job->magick=0xdeadbeef; /* Mark as a zombie */
+        job->magick=1234569; /* Mark as a zombie */
         free(job);
+
         return ret;
 }
 
@@ -282,6 +293,9 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         Directory *result=NULL;
         const char *path=dir->name;
         int i;
+        
+        assert(dir);
+        assert(!dir->job || dir->job->magick==0x10b10b);
 
         /* Lock the job list */
         pthread_mutex_lock(&mut);
@@ -312,6 +326,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
 	        scans.pre_scan_used++;
                 result=d->result;
                 free_job(dir->job);
+                assert(!dir->job || dir->job->magick==0x10b10b);
 
                 pthread_cond_broadcast(&cond); /* wake up anyone who was waiting for this */
         } else scans.pre_scan_misses++;
@@ -327,10 +342,11 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                 }
 
         } else {
+                set_thread_status(file_path(parent, dir->name),"scanning dir");
 	        /* The directory was not in queue or was not started. Scan it in this thread */
                 pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
 	        result=scan_directory(path,parent);
-                pthread_mutex_lock(&mut); /* Need mutex to add new jobs */
+                pthread_mutex_lock(&mut);
         }
 
         if (result==NULL) goto out;
@@ -350,6 +366,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                                 continue;
                         }
                         Job *d=my_calloc(1,sizeof(*d));
+                        d->magick=0x10b10b;
                         d->fentry=&result->array[i];
                         result->array[i].job=d; /* Link the entry to the job */
                         d->from=result;
@@ -377,6 +394,8 @@ out:
  * Assumes mutex is held.
  */
  int run_one_job(Job *j) {
+        assert(j && j->magick==0x10b10b);
+
         switch(j->state) {
 
         case SCAN_WAITING:
@@ -430,7 +449,12 @@ out:
         // Run prescan jobs first, since someone is likely waiting for them
         for (j=pre_scan_list; j && (j->state!=SCAN_WAITING); j=j->next);
         if (j && run_one_job(j)) return 1; /* one job was run, return */
-        for (j=pre_scan_list; j && j->state!=JOB_WAITING; j=j->next);
+        for (j=pre_scan_list; j; j=j->next) {
+                if (j->state==JOB_WAITING && j->offset==DSYNC_JOB_WAIT && j->fentry->job && j->fentry->job!=j  ) {
+                        continue; // Waiting for previous jobs to finish
+                }
+                if (j->state==JOB_WAITING) break; /* run the job */
+        }
         if (j && run_one_job(j)) return 1; /* one job was run, return */
 
         /* No jobs to run, we wait */
@@ -487,6 +511,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         job->state=JOB_WAITING;
 
         pthread_mutex_lock(&mut);
+        for(Job *queue_job=pre_scan_list; queue_job; queue_job=queue_job->next) assert(queue_job->magick==0x10b10b);
         if (job->from) job->from->refs++;
         if (job->to) job->to->refs++;
         if (fentry->job) {
@@ -502,6 +527,8 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
                 fentry->job=job;
 
         }
+        for(Job *queue_job=pre_scan_list; queue_job; queue_job=queue_job->next) assert(queue_job->magick==0x10b10b);
+
         scans.jobs++;
         if ( ++scans.queued > scans.maxjobs ) scans.maxjobs=scans.queued;
         pthread_cond_broadcast(&cond);
@@ -551,7 +578,7 @@ int print_jobs(FILE *f) {
                 fprintf(f,"Thread %3d: %s\n", i, s->status);
                 i++;
         }
-        return 0;
+        if (progress<4) return 0; 
         Job *j=pre_scan_list;
         i=0;
         while(j) {

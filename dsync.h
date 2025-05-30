@@ -37,6 +37,7 @@ typedef struct {
     struct DirectoryStruct *dir;
 } Entry;
 
+#define DSYNC_JOB_WAIT -123
 
 /* We keep the fd of all directories around until the directories are processed to be able to use 
    openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
@@ -115,6 +116,8 @@ static inline void *my_realloc(void *ptr, size_t size) {
     }
     return newptr;
 }
+
+extern int progress;
 
 #define strdup(X) ( use_my_strdup_instead(X) )
 Directory *scan_directory(const char *name, Directory *parent);

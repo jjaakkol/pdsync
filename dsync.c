@@ -48,14 +48,11 @@ static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
 static int privacy=0;
-static int progress=0;
+int progress=0;
 static int threads=4;
 uid_t myuid=0;
 
 FILE *tty_stream=NULL; /* For --progress */
-
-size_t target_dir_len=1024, source_dir_len=1024;
-static const char *target_dir=NULL;
 
 typedef struct ExcludeStruct {
     regex_t regex;
@@ -65,11 +62,9 @@ typedef struct ExcludeStruct {
 Exclude *exclude_list=NULL;
 Exclude **last_excluded=&exclude_list;
 
-    
-        
+// TODO static source and target paths should probly be removed
 static char s_topath[MAXLEN];
 static char s_frompath[MAXLEN];
-
 static struct stat target_stat;
 static struct stat source_stat;
 
@@ -369,7 +364,7 @@ static void print_scans(const Scans *scans) {
 }
 
 static void print_opers(FILE *stream, const Opers *stats) {
-         struct timespec now;
+        struct timespec now;
 
         clock_gettime(CLOCK_BOOTTIME, &now);
         long ns = (now.tv_sec*1000000000L + now.tv_nsec) - 
@@ -420,6 +415,16 @@ static void print_opers(FILE *stream, const Opers *stats) {
     if (stats->devs_created) {
         fprintf(stream, "%8d devs created\n", stats->devs_created);
     }
+    if (stats->chown) {
+        fprintf(stream,"%8d file owner/group changed\n", stats->chown);
+    }
+    if (stats->chmod) {
+        fprintf(stream,"%8d file chmod bits changed\n", stats->chown);
+    }
+    if (stats->times) {
+        fprintf(stream,"%8d file atime/mtime changed\n", stats->chown);
+    }
+    
     if (stats->read_errors) {
         fprintf(stream, "%8d errors on read\n", stats->read_errors);
     }
@@ -560,12 +565,19 @@ int copy_regular(Directory *from,
 
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
-    write_error("open", from, source);
-    goto fail;
+                write_error("open", from, source); /* FIXME: this is not a write error*/
+                goto fail;
+        }
+        tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
+        if(tofd<0) {
+                write_error("open", to, target);
+                goto fail;
         }
 
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
+                /* Start the copy jobs from here, but don' do it ourselves  */
+
                 item("CP",to,target);
                 opers.files_copied++;
 
@@ -577,7 +589,10 @@ int copy_regular(Directory *from,
                                 sparse_warned++;
                         }
 	        }
-                close(fromfd); /* prevent leak */
+
+                /* TODO: could ftruncate here */
+                close(fromfd); 
+                close(tofd);
 
 	        sparse_copy=preserve_sparse;
 
@@ -586,7 +601,7 @@ int copy_regular(Directory *from,
                         return 0;
                 }
 
-                /* Start the other copy threads from the first thread */
+                /* Submit the actual copy jobs  */
                 num_jobs=from_stat.st_size/copy_job_size+1;
                 for (int i=0; i<num_jobs; i++) {
                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
@@ -597,11 +612,7 @@ int copy_regular(Directory *from,
 
     set_thread_status(file_path(to,target),"copy");
 
-    tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
-    if(tofd<0) {
-        write_error("open", to, target);
-        goto fail;
-    }
+
 	    
     if (sparse_copy) {
 	/* Copy loop which handles sparse blocks */
@@ -984,9 +995,85 @@ void skip_entry(Directory *to, const Entry *fentry) {
         }
 }
 
+/* Job call back to update the inode bits */
+int sync_metadata(Directory *from_parent, Entry *fentry,
+        Directory *to, const char *target,
+        off_t offset) {
+        int ret=0;
+        set_thread_status("sync metadata", file_path(to, target));
+                        	
+        /* Lookup the existing inode bits */
+        struct stat to_stat;      
+        if (fstatat(to->fd, fentry->name, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
+                // If the target does not exists, we have complained about it before
+                fprintf(stderr, "fstatat failed for %s/%s: %s\n", dir_path(to), fentry->name, strerror(errno));
+                return -1;
+        }
+
+        /* Check if we need to update UID and GID */
+        uid_t uid=-1;
+        gid_t gid=-1;
+        if (preserve_owner && to_stat.st_uid != fentry->stat.st_uid) {
+                uid=fentry->stat.st_uid;
+        }
+        if (preserve_group && (to_stat.st_gid != fentry->stat.st_gid) ) {
+                gid=fentry->stat.st_gid;
+        }
+        if (uid!=-1 || gid!=-1) {
+                if (!dryrun && fchownat(dirfd(to->handle),fentry->name, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
+                        ret=errno;
+                        write_error("fchownat", to, fentry->name);
+                } else {
+                        if (itemize>1) item("CO",to,fentry->name);
+                        opers.chown++;
+                }
+        }
+
+        // Permission bits
+        if (preserve_permissions && 
+                !S_ISLNK(fentry->stat.st_mode) &&
+                fentry->stat.st_mode!=to_stat.st_mode) {
+                if (!dryrun && fchmodat(dirfd(to->handle), fentry->name, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
+                        ret=errno;
+                        write_error("fchmodat", to, fentry->name);
+                } else {
+                        if (itemize>2) item("CH",to,fentry->name);
+                        opers.chmod++;
+                }
+        }
+                
+        // Access times
+        if ( (preserve_time||atime_preserve) && !S_ISLNK(fentry->stat.st_mode) ) {
+                struct timespec tmp[2] = {
+                        { .tv_sec=0, .tv_nsec=UTIME_NOW },
+                        { .tv_sec=0, .tv_nsec=UTIME_NOW }
+                };
+                tmp[0]=to_stat.st_atim;
+                tmp[1]=to_stat.st_mtim;
+
+                if (atime_preserve) tmp[0]=fentry->stat.st_atim;
+                if (preserve_time) tmp[1]=fentry->stat.st_mtim;
+
+                if (
+                        to_stat.st_atim.tv_sec == tmp[0].tv_sec &&
+                        to_stat.st_atim.tv_nsec == tmp[0].tv_nsec &&
+                        to_stat.st_mtim.tv_sec == tmp[1].tv_sec &&
+                        to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
+                ) {
+                        /* skip, times were right */
+                } else if (!dryrun && utimensat(dirfd(to->handle),fentry->name,tmp,AT_SYMLINK_NOFOLLOW)<0) {
+                        ret=errno;
+                        write_error("utimensat", to, fentry->name);
+                } else {
+                        if (itemize) item("TI", to, fentry->name);
+                        opers.times++;
+                }
+        }
+        return ret;
+}
+
 int dsync(Directory *from_parent, Entry *parent_fentry, 
         Directory *to_parent, const char *target, off_t offset) {
-    struct stat cdir;
     int fromfd=-1;
     int tofd=-1;
     Directory *from=NULL;
@@ -996,6 +1083,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
     int tolen=strlen(target);
     char todir[MAXLEN];
 
+    assert(parent_fentry);
+
     set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
     strncpy(todir,target,sizeof(todir));
 
@@ -1004,18 +1093,12 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 	opers.read_errors++;
 	goto fail;
     }
-    if ( fstat(dirfd(from->handle),&cdir) < 0 ){
-        perror("fstat");
-        exit(1);
-    }
-  
+
     /* We always have a parent_fentry, since that is where we are copying files from,
      * but the inode we are copying to might not exist. Create a dummy Entry for it. */
-    Entry dummy_tentry;
     Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
     if (parent_tentry==NULL) {
-        memset(&dummy_tentry,0,sizeof(dummy_tentry));
-        parent_tentry=&dummy_tentry;
+        parent_tentry=my_calloc(1,sizeof(Entry));
         parent_tentry->name=my_strdup(target);
     }
     to=pre_scan_directory(to_parent, parent_tentry);
@@ -1090,6 +1173,9 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 		continue;
 	    }
 
+            /* We have a target to set the inode bits. We submit a job to set its bits */
+            submit_job(from, fentry, to, fentry->name, DSYNC_JOB_WAIT, sync_metadata);
+
 	    /* Save paths to entries having link count > 1 
 	     * for making hard links */
 	    if (preserve_hard_links &&
@@ -1099,11 +1185,10 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 	    }
 	}
 
-
 	/* Check if we should skip a subdirectory */
-	if (S_ISDIR(fentry->stat.st_mode) && 
-	        one_file_system && 
-	        fentry->stat.st_dev!=cdir.st_dev)  {
+	if (one_file_system &&
+                S_ISDIR(fentry->stat.st_mode) && 
+	        fentry->stat.st_dev!=from_parent->stat.st_dev) {
 	        /* On different file system and one_file_system was given */
                 skip_entry(to,fentry);
 	} else if (fentry->stat.st_ino == target_stat.st_ino && 
@@ -1121,62 +1206,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 	    /* All checks turned out green: we start a job to recurse to subdirectory */
             submit_job(from, fentry, to, fentry->name, offset+1, dsync);
 	}
-
-	/* Check if we need to update the inode bits */
-	if (!dryrun && !delete_only) {
-                if (fentry) wait_for_entry(fentry);
-                /* UID and GID */
-                uid_t uid=-1;
-                gid_t gid=-1;
-                if (preserve_owner && (tentry==NULL || tentry->stat.st_uid != fentry->stat.st_uid) ) {
-                        uid=fentry->stat.st_uid;
-                }
-                if (preserve_group && (tentry==NULL || tentry->stat.st_gid != fentry->stat.st_gid) ) {
-                        gid=fentry->stat.st_gid;
-                }
-                if (uid!=-1 || gid!=-1) {
-		        if ( fchownat(dirfd(to->handle),fentry->name, uid, gid,AT_SYMLINK_NOFOLLOW)<0 ) {
-                    write_error("fchownat", to, fentry->name);
-		        } else opers.chown++;
-		}
-
-                // Permissions 
-	        if (preserve_permissions && 
-		        !S_ISLNK(fentry->stat.st_mode) &&
-                        (!tentry || fentry->stat.st_mode!=tentry->stat.st_mode) ) {
-		        if (fchmodat(dirfd(to->handle),fentry->name,fentry->stat.st_mode,AT_SYMLINK_NOFOLLOW)<0) {
-                    write_error("fchmodat", to, fentry->name);
-		        } else opers.chmod++;
-	        }
-
-	    if ( (preserve_time || atime_preserve) && !S_ISLNK(fentry->stat.st_mode)) {
-		struct timespec tmp[2] = {
-                        { .tv_sec=0, .tv_nsec=UTIME_NOW },
-                        { .tv_sec=0, .tv_nsec=UTIME_NOW }
-                };
-                if (tentry) {
-                        tmp[0]=tentry->stat.st_atim;
-                        tmp[1]=tentry->stat.st_mtim;
-                }
-                if (atime_preserve) tmp[0]=fentry->stat.st_atim;
-                if (preserve_time) tmp[1]=fentry->stat.st_mtim;
-                if (atime_preserve||preserve_time) {
-                        if (tentry && 
-                                tentry->stat.st_atim.tv_sec == tmp[0].tv_sec &&
-                                tentry->stat.st_atim.tv_nsec == tmp[0].tv_nsec &&
-                                tentry->stat.st_mtim.tv_sec == tmp[1].tv_sec &&
-                                tentry->stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
-                        ) {
-                                /* skip, times were right */
-                        } else if (utimensat(dirfd(to->handle),fentry->name,tmp,AT_SYMLINK_NOFOLLOW)<0) {
-                                write_error("utimensat", to, fentry->name);
-                        } else opers.times++;
-                }
-
-	    }
-	}
     }
-
+    
     ret=0;
     int failed_jobs=0;
 
@@ -1186,7 +1217,7 @@ fail:
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
     if (fromfd>=0) close(fromfd);
     if (tofd>=0) close(tofd);
-#
+
     if (from) d_freedir(from);
     if (to) d_freedir(to);
 
@@ -1221,49 +1252,44 @@ int main(int argc, char *argv[]) {
 	memset(link_htable,0,sizeof(Link *)*hash_size);
     }
     
-    
-    if (realpath(argv[optind+1],s_topath)==NULL) {
-        fprintf(stderr,"realpath() failed for %s\n",argv[optind+1]);
-        exit(1);
-    }
-    if (stat(s_topath,&target_stat)<0 || 
-	!S_ISDIR(target_stat.st_mode)) {
-	fprintf(stderr,"target '%s' is not a directory.\n",s_topath);
-	exit(1);
-    }
-    int dfd=open(argv[optind], O_DIRECTORY | O_RDONLY);
-    if (dfd<0) {
-        fprintf(stderr,"Could not open source '%s': %s", argv[optind], strerror(errno));
-        exit(1);
-    }
-    if (fchdir(dfd)<0) {
-	fprintf(stderr,"chdir('%s'): %s\n",argv[optind],strerror(errno));
-	exit(1);
-    }
-    if (fstat(dfd,&source_stat)<0 ||
-	!S_ISDIR(source_stat.st_mode)) {
-	fprintf(stderr,"stat('%s'): %s\n",argv[optind],strerror(errno));
-	exit(1);
-    }
-    if (getcwd(s_frompath,sizeof(s_frompath))==NULL)  {
-        fprintf(stderr,"getcwd(source_dir) failed: %s",strerror(errno));
-        exit(1);
-    }
+        // Open source and target directories
+        int sfd=dir_openat(NULL, argv[optind]);
+        if (sfd<0) {
+                fprintf(stderr,"Open source directory'%s': %s", argv[optind], strerror(errno));
+                exit(1);
+        }
+        int tfd=dir_openat(NULL, argv[optind+1]);
+        if (tfd<0) {
+                fprintf(stderr,"Open target directory '%s': %s\n",argv[optind+1],strerror(errno));
+                exit(1);
+        }
+        if (fchdir(tfd)<0) {
+	        fprintf(stderr,"chdir('%s'): %s\n",argv[optind],strerror(errno));
+	        exit(1);
+        }
 
-    target_dir=my_strdup(s_topath);
-    target_dir_len=strlen(target_dir);
+        // Record the starting timestamp
+        clock_gettime(CLOCK_BOOTTIME,&opers.start_clock_boottime);
 
-    // Record the starting timestamp
-    clock_gettime(CLOCK_BOOTTIME,&opers.start_clock_boottime);
+        // Init the static source and target
+        // FIXME: this should be removed.
+        if (! realpath(argv[optind], s_frompath)) {
+                fprintf(stderr,"Cannot resolve source path '%s': %s\n", argv[optind], strerror(errno));
+                exit(1);
+        }
+        if (! realpath(argv[optind+1], s_topath)) {
+                fprintf(stderr,"Cannot resolve target path '%s': %s\n", argv[optind+1], strerror(errno));
+                exit(1);
+        }
+        fstat(sfd,&source_stat);
+        fstat(tfd,&target_stat);
 
-    Entry fentry;
-    init_entry(&fentry, dfd, ".");
-    close(dfd);
-  
-    Job *job=submit_job(NULL, &fentry, NULL, s_topath, 0, dsync);
+        Entry from_entry;
+        init_entry(&from_entry, sfd, s_frompath);
+        Job *job=submit_job(NULL, &from_entry, NULL, s_topath, 0, dsync);
 
-    // start the threads and wait the submitted job to finish
-    start_job_threads(threads, job);
+        // start the threads, job queue and wait the submitted job to finish
+        start_job_threads(threads, job);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
