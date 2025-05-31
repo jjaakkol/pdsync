@@ -424,7 +424,6 @@ static void print_opers(FILE *stream, const Opers *stats) {
     if (stats->times) {
         fprintf(stream,"%8d file atime/mtime changed\n", stats->chown);
     }
-    
     if (stats->read_errors) {
         fprintf(stream, "%8d errors on read\n", stats->read_errors);
     }
@@ -469,7 +468,7 @@ void show_progress() {
         );
         if (progress>=2) print_opers(tty_stream,&opers);
         if (progress>=3) print_scans(&scans);
-        if (progress>4) print_jobs(tty_stream);
+        if (progress>=4) print_jobs(tty_stream);
  
         last_scanned=scans.entries_scanned;
         last_bytes=opers.bytes_copied;
@@ -559,6 +558,8 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         const char *source=fentry->name;
         assert(source && target);
 
+        set_thread_status(file_path(to,target),"copy");
+
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
                 write_error("open", from, source); /* FIXME: this is not a write error*/
@@ -572,7 +573,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
-                /* Start the copy jobs from here, but don' do it ourselves  */
+                /* Start the copy jobs from here, and do the first one ourselves  */
 
                 item("CP",to,target);
                 opers.files_copied++;
@@ -586,9 +587,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         }
 	        }
 
-                /* TODO: could ftruncate here */
-                close(fromfd); 
-                close(tofd);
 
 	        sparse_copy=preserve_sparse;
 
@@ -597,19 +595,16 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         return 0;
                 }
 
-                /* Submit the actual copy jobs  */
+                // TODO: could ftruncate here */
+
+                /* If the file is large submit the rest of the copy jobs */
                 num_jobs=from_stat.st_size/copy_job_size+1;
-                for (int i=0; i<num_jobs; i++) {
+                for (int i=1; i<num_jobs; i++) {
                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                 }
-
-                return ret;
+                offset=0;
     }
 
-    set_thread_status(file_path(to,target),"copy");
-
-
-	    
     if (sparse_copy) {
 	/* Copy loop which handles sparse blocks */
 	char *spbuf=NULL;
