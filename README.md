@@ -26,16 +26,16 @@ make
 
 ## TODO
 
-- Paralel fire removal
-- Better scheduling
-- Faster directory scan
-- Remove some unnecessary complicated code
-- Fix hard links
-- cp command
-- rm command
-- find command
-- Working sparse files
-- In place updating
+- Parallel file removal
+- Improved scheduling
+- Faster directory scanning
+- Simplify unnecessarily complicated code
+- Fix hard link support
+- Implement `cp` command
+- Implement `rm` command
+- Implement `find` command
+- Proper sparse file handling
+- In-place file updating
 
 ## License
 
