@@ -804,7 +804,8 @@ int entry_changed(const Entry *from, const Entry *to) {
                 (from->stat.st_atime!=to->stat.st_atime ||
                 from->stat.st_atim.tv_nsec != to->stat.st_atim.tv_nsec) ) {
         return 1;
-    }       
+    }
+
     /* If from is newer by mtime it has changed. */
     if (from->stat.st_mtime>to->stat.st_mtime) {
 	return 1;
@@ -819,19 +820,16 @@ int entry_changed(const Entry *from, const Entry *to) {
         return 0;
     }
 
-    /* With symlinks we cannot just compare modification times:
-     * they will be different, because there is no way to change
-     * mtime of a symlink! */
+    /* If symlink names match don't update it. */
     if (S_ISLNK(from->stat.st_mode) && 
 	S_ISLNK(to->stat.st_mode) &&
 	strcmp(from->link,to->link)==0) {
-	/* Symlinks do not match */
+	/* Symlinks do match */
 	return 0;
     }
-    
-    /* fprintf(stderr,"Just different: %s %s\n",from->name,to->name); */
 
-    /* entries we're different */
+    /* fprintf(stderr,"Just different: %s %s\n",from->name,to->name); */
+    /* We found no reason to skip updating */
     return 1;
 }
 
@@ -956,7 +954,7 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
         }
                 
         // Access times
-        if ( (preserve_time||atime_preserve) && !S_ISLNK(fentry->stat.st_mode) ) {
+        if ( (preserve_time||atime_preserve) ) {
                 struct timespec tmp[2] = {
                         { .tv_sec=0, .tv_nsec=UTIME_NOW },
                         { .tv_sec=0, .tv_nsec=UTIME_NOW }
@@ -1058,6 +1056,8 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        show_error_dir("Unknown file type ignored in dir: \n", from, fentry->name);
                 return -1;
         }
+
+        /* If we did not start a Job, we can just update the metadata now, */
         sync_metadata(from, fentry, to, fentry->name, offset);
 
 
