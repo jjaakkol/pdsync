@@ -679,83 +679,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
     goto end;
 }
 
-/* Create target is a Job callback */
-int create_target(Directory *from,
-                  Entry *fentry,
-                  Directory *to,
-                  const char *target,
-		  off_t offset) {
-    assert(from && fentry && to && target);
-    const char *source=fentry->name;
-    assert(source);
-
-    int tofd=dirfd(to->handle);
-
-    if (S_ISREG(fentry->stat.st_mode)) {
-	/* copy regular can submit jobs */
-	return copy_regular(from, fentry, to, target, -1);
-    } else if (S_ISDIR(fentry->stat.st_mode)) {
-	struct stat tmp;
-	if (!recursive) return -1;
-	if (fstatat(tofd,target,&tmp,0)<0) {
-	    item("MD",to,target);
-	    if (!dryrun && mkdirat(tofd,target,0777)<0 ) {
-                        write_error("mkdir", to, target);
-                        goto fail;
-	    }
-	    opers.dirs_created++;
-	} else if (!dryrun) {
-	    if (!S_ISDIR(tmp.st_mode)) {
-                errno=0;
-                write_error("Target is not a directory", to, target);
-                goto fail;
-	    }
-	    if (safe_mode) {
-		if (preserve_owner && fchown(tofd,0,0)<0) {
-                    write_error("fchown", to, target);
-                    goto fail;
-		}
-		if (fchmod(tofd,0700)<0) {
-                    write_error("chmod", to, target);
-                    goto fail;
-		}
-	    }
-	}
-    } else if (S_ISLNK(fentry->stat.st_mode)) {
-	if (!preserve_links) return 0;
-	item("SL",to,target);
-	if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
-            write_error("symlink", to, target);
-            goto fail;
-	} else {
-	    opers.symlinks_created++;
-	}
-    } else if (S_ISSOCK(fentry->stat.st_mode)) {
-        fprintf(stderr,"Ignoring socket : %s%s\n",dir_path(from),fentry->name);
-
-    } else if (S_ISFIFO(fentry->stat.st_mode)) {
-	if (!preserve_devices) return -1;
-	item("FI",to,target);
-	if (!dryrun && mkfifoat(tofd,target,0777)<0) {
-            write_error("mkfifo", to, target);
-            goto fail;
-	}
-	opers.fifos_created++;
-
-        // Don't bother with device special files 
-    } else if (S_ISCHR(fentry->stat.st_mode)) {
-        fprintf(stderr,"Ignoring character device : %s%s\n",dir_path(from),fentry->name);
-        return -1;
-    } else {
-	show_warning("Unknown file type ignored in dir: \n",dir_path(from));
-        return -1;
-    }   
-    return 0;
-
- fail:
-    return -1;
-}
-
 /* Remove one entry from a directory */
 int remove_entry(Directory *parent, Entry *tentry) {
         const char *name=tentry->name;
@@ -1062,8 +985,86 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
         return ret;
 }
 
-int dsync(Directory *from_parent, Entry *parent_fentry, 
-        Directory *to_parent, const char *target, off_t offset) {
+// Job callback to create one target inode, directory, file, FIFO, ... 
+int create_target(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
+        assert(from && fentry && to && target);
+        const char *source=fentry->name;
+        assert(source);
+
+        int tofd=dirfd(to->handle);
+
+        if (S_ISREG(fentry->stat.st_mode)) {
+	        /* copy regular might submit jobs */
+	        copy_regular(from, fentry, to, target, -1);
+                /* We have a target to set the inode bits. We submit a job to set its bits */
+                submit_job(from, fentry, to, fentry->name, DSYNC_JOB_WAIT, sync_metadata);
+                return 0;
+        }
+        
+        if (S_ISDIR(fentry->stat.st_mode)) {
+                struct stat tmp;
+	        if (fstatat(tofd,target,&tmp,0)<0 && errno==ENOENT ) {
+	                item("MD",to,target);
+	                if (!dryrun && mkdirat(tofd,target,0777)<0 ) {
+                                write_error("mkdir", to, target);
+                                return -1;
+	                }
+	                opers.dirs_created++;
+                } else if (!dryrun && !S_ISDIR(tmp.st_mode) ) {
+                        errno=ENOTDIR;
+                        write_error("Existing target is not a directory", to, target);
+                        return -1;
+	        }
+	        if (safe_mode) {
+		        if (preserve_owner && fchown(tofd,0,0)<0) {
+                                write_error("fchown", to, target);
+                                return -1;
+                        }
+		        if (fchmod(tofd,0700)<0) {
+                                write_error("chmod", to, target);
+                                return -1;
+		        }
+	        }
+                /* FIXME: we should submit recursive dsync here */
+    
+        } else if (S_ISLNK(fentry->stat.st_mode)) {
+        	if (!preserve_links) return 0;
+	        item("SL",to,target);
+	        if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
+                        write_error("symlink", to, target);
+                        return -1;
+                } else {
+	                opers.symlinks_created++;
+	        }
+
+        } else if (S_ISSOCK(fentry->stat.st_mode)) {
+                show_error_dir("Ignoring socket : %s%s\n", from,fentry->name);
+                return 0;
+
+        } else if (S_ISFIFO(fentry->stat.st_mode)) {
+	        if (!preserve_devices) return 0;
+	        item("FI",to,target);
+	        if (!dryrun && mkfifoat(tofd,target,0777)<0) {
+                        write_error("mkfifo", to, target);
+                        return -1;
+	        }
+
+        // Don't bother with device special files 
+        } else if (S_ISCHR(fentry->stat.st_mode)) {
+                show_error_dir("Ignoring character device", from, fentry->name);
+                return 0;
+
+        } else {
+	        show_error_dir("Unknown file type ignored in dir: \n", from, fentry->name);
+                return -1;
+        }
+        sync_metadata(from, fentry, to, fentry->name, offset);
+
+
+        return 0;
+}
+
+int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {
     int fromfd=-1;
     int tofd=-1;
     Directory *from=NULL;
@@ -1162,9 +1163,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry,
 		/* Failed to create new entry */
 		continue;
 	    }
-
-            /* We have a target to set the inode bits. We submit a job to set its bits */
-            submit_job(from, fentry, to, fentry->name, DSYNC_JOB_WAIT, sync_metadata);
 
 	    /* Save paths to entries having link count > 1 
 	     * for making hard links */
