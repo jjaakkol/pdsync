@@ -34,10 +34,9 @@ typedef struct {
     char *link;
     int error;                  /* If there was a IO error with stat() */
     struct JobStruct *job;      /* If this entry has a job associated to it */
+    struct JobStruct *wait_queue; /* Jobs waiting for this entry to be done */
     struct DirectoryStruct *dir;
 } Entry;
-
-#define DSYNC_JOB_WAIT -123
 
 /* We keep the fd of all directories around until the directories are processed to be able to use 
    openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
@@ -47,9 +46,10 @@ typedef struct DirectoryStruct {
     int fd;
     struct stat stat;
     struct DirectoryStruct *parent;
+    Entry *parent_entry;
     char *name;
     int entries;
-    int refs; 
+    int refs;
     Entry *array;
 } Directory;
 
@@ -121,19 +121,22 @@ extern int progress;
 
 #define strdup(X) ( use_my_strdup_instead(X) )
 
+// dsync.d
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
 
-Directory *scan_directory(const char *name, Directory *parent);
+// scandir.c
+// submit_job() flags
+#define DSYNC_FILE_WAIT -123 // Wait for all jobs to attached to From Entry to finish before starting job
+#define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
+Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+
+Directory *scan_directory(Directory *parent, Entry *e);
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);
-
 Directory *pre_scan_directory(Directory *parent, Entry *dir);
 void start_job_threads(int threads, Job *job);
 void d_freedir(Directory *dir);
-
-Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 int wait_for_entry(Entry *job);
-
 const char *dir_path(const Directory *d);
 const char *file_path(const Directory *d, const char *f);
 void show_error_dir(const char *message, const Directory *parent, const char *file);

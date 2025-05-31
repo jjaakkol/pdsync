@@ -990,7 +990,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        /* copy regular might submit jobs */
 	        copy_regular(from, fentry, to, target, -1);
                 /* We have a target to set the inode bits. We submit a job to set its bits */
-                submit_job(from, fentry, to, fentry->name, DSYNC_JOB_WAIT, sync_metadata);
+                submit_job(from, fentry, to, fentry->name, DSYNC_FILE_WAIT, sync_metadata);
                 return 0;
         }
         
@@ -1035,7 +1035,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
                         submit_job(from, fentry, to, target, offset, dsync);
                         /* We have a target to set the inode bits. We submit a job to set its bits */
-                        submit_job(from, fentry, to, target, DSYNC_JOB_WAIT, sync_metadata);
+                        submit_job(from, fentry, to, target, DSYNC_DIR_WAIT, sync_metadata);
                         return 0;
 	        }
     
@@ -1091,7 +1091,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
     assert(parent_fentry);
 
     set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
-    strncpy(todir,target,sizeof(todir));
+    strncpy(todir,target,sizeof(todir)-1);
 
     from=pre_scan_directory(from_parent, parent_fentry);
     if (from==NULL) {

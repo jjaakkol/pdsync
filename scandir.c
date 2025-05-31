@@ -195,7 +195,7 @@ Entry *init_entry(Entry * entry, int dfd, char *name) {
 }
 
 /* scan_directory can be called from multiple threads */
-Directory *scan_directory(const char *name, Directory *parent) {
+Directory *scan_directory(Directory *parent, Entry *fentry) {
     DIR *d=NULL;
     int dfd=-1;
     Directory *nd=NULL;
@@ -204,6 +204,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
     int allocated=16;
     int entries=0;
     char **names=NULL;
+    const char *name = fentry->name;
 
     assert(!parent || parent->magick!=0xDADDEAD);
     assert(!parent || parent->magick==0xDADDAD);
@@ -221,6 +222,7 @@ Directory *scan_directory(const char *name, Directory *parent) {
     nd=my_calloc(1,sizeof(Directory));
     nd->parent=parent;
     nd->name=my_strdup(name);
+    nd->parent_entry=fentry;
     nd->handle=d;
     nd->fd=dfd;
     nd->refs=1; /* The directory is now referenced once */
@@ -349,7 +351,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                 set_thread_status(file_path(parent, dir->name),"scanning dir");
 	        /* The directory was not in queue or was not started. Scan it in this thread */
                 pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
-	        result=scan_directory(path,parent);
+	        result=scan_directory(parent, dir);
                 pthread_mutex_lock(&mut);
         }
 
@@ -406,7 +408,7 @@ out:
                 j->state=SCAN_RUNNING;
                 set_thread_status(file_path(j->from, j->fentry->name),"scanning dir");
                 pthread_mutex_unlock(&mut);
-                j->result=scan_directory(j->fentry->name,j->from);
+                j->result=scan_directory(j->from,j->fentry);
                 /* Don't keep prescanned directories open to conserve filedescriptos */
                 if (j->result) {
                         if (j->result->handle) closedir(j->result->handle);
@@ -430,10 +432,26 @@ out:
                 j->ret=j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                 pthread_mutex_lock(&mut);
                 j->state=JOB_READY;
-                free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 scans.queued--;
+                Job *wj=j->fentry->wait_queue;
+                if (wj==NULL && j->from) wj=j->from->parent_entry->wait_queue;
+                free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
+                if (wj) {
+                        // Schedule the wait queue job, if there was one */
+                        Job *i;
+                        for (i=pre_scan_list; i; i=i->next) {
+                                if (i->fentry==wj->fentry) break;
+                                if (i->from && i->from->parent_entry==wj->fentry) break;
+                        }
+                        if (i==NULL) {
+                                wj->next=pre_scan_list;
+                                pre_scan_list=wj;
+                                wj->fentry->wait_queue=NULL;
+                        }
+                        //printf("jobs left %d/%d in %s\n",jobs_left,scans.queued, file_path(wj->from, wj->fentry->name));
+
+                }
                 pthread_cond_broadcast(&cond);
-                show_progress();
                 return 1;
 
         default: return 0;
@@ -454,7 +472,7 @@ out:
         for (j=pre_scan_list; j && (j->state!=SCAN_WAITING); j=j->next);
         if (j && run_one_job(j)) return 1; /* one SCAN job was run, return */
         for (j=pre_scan_list; j; j=j->next) {
-                if (j->state==JOB_WAITING && j->offset==DSYNC_JOB_WAIT && j->fentry->job!=j ) {
+                if (j->state==JOB_WAITING && j->offset==DSYNC_FILE_WAIT && j->fentry->job!=j ) {
                         continue; // This job is waiting for previous jobs to finish
                 }
                 if (j->state==JOB_WAITING) break; /* run the job */
@@ -478,8 +496,9 @@ static _Thread_local struct ThreadStatus status = PTHREAD_MUTEX_INITIALIZER;
 static struct ThreadStatus *first_status=NULL;
 
 void set_thread_status(const char *file, const char *s) {
+        if (progress<3) return; 
         pthread_mutex_lock(&status.mut);
-        snprintf(status.status,MAXLEN-1,"%-12s : %s",s, (file)?file:"");
+        snprintf(status.status,MAXLEN-1,"%-12s : %.100s",s, (file)?file:"");
         pthread_mutex_unlock(&status.mut);
 }
 
@@ -518,7 +537,10 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         for(Job *queue_job=pre_scan_list; queue_job; queue_job=queue_job->next) assert(queue_job->magick==0x10b10b);
         if (job->from) job->from->refs++;
         if (job->to) job->to->refs++;
-        if (fentry->job) {
+        if (job->offset==DSYNC_DIR_WAIT) {
+                assert(job->fentry->wait_queue==NULL);
+                job->fentry->wait_queue=job; // Put it to wait queue
+        } else if (fentry->job) {
                 /* Put it last to its own Entry queue */
                 Job *prev=fentry->job;
                 while (prev->next && prev->next->fentry == fentry) prev=prev->next;
@@ -604,7 +626,8 @@ void start_job_threads(int job_threads, Job *job) {
         pthread_mutex_lock(&mut);
         pthread_cond_broadcast(&cond); /* Kickstart the threads */
         while(scans.queued > 0) {
-                /* call show_progress() while waiting for the to finish */  
+                assert(pre_scan_list);
+                /* call show_progress() while waiting for the to finish */
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
                 ts.tv_sec += 1; // wait at most 1 second
