@@ -582,7 +582,7 @@ int print_jobs(FILE *f) {
                 fprintf(f,"Thread %3d: %s\n", i, s->status);
                 i++;
         }
-        if (progress<4) return 0; 
+        if (progress<5) return 0;
         Job *j=pre_scan_list;
         i=0;
         while(j) {
