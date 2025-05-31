@@ -120,6 +120,9 @@ static inline void *my_realloc(void *ptr, size_t size) {
 extern int progress;
 
 #define strdup(X) ( use_my_strdup_instead(X) )
+
+int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
+
 Directory *scan_directory(const char *name, Directory *parent);
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);

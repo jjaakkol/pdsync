@@ -1000,15 +1000,17 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         }
         
         if (S_ISDIR(fentry->stat.st_mode)) {
-                struct stat tmp;
-	        if (fstatat(tofd,target,&tmp,0)<0 && errno==ENOENT ) {
-	                item("MD",to,target);
-	                if (!dryrun && mkdirat(tofd,target,0777)<0 ) {
-                                write_error("mkdir", to, target);
-                                return -1;
-	                }
-	                opers.dirs_created++;
-                } else if (!dryrun && !S_ISDIR(tmp.st_mode) ) {
+                struct stat target_stat;
+	        if (fstatat(tofd,target,&target_stat,AT_SYMLINK_NOFOLLOW)<0) {
+                        if  (errno==ENOENT ) {
+	                        item("MD",to,target);
+	                        if (!dryrun && (mkdirat(tofd,target,0777)<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
+                                        write_error("mkdir", to, target);
+                                        return -1;
+	                        }
+	                        opers.dirs_created++;
+                        }
+                } else if (!dryrun && !S_ISDIR(target_stat.st_mode) ) {
                         errno=ENOTDIR;
                         write_error("Existing target is not a directory", to, target);
                         return -1;
@@ -1023,7 +1025,24 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                                 return -1;
 		        }
 	        }
-                /* FIXME: we should submit recursive dsync here */
+        	if (one_file_system && from->parent && fentry->stat.st_dev!=from->parent->stat.st_dev) {
+	                /* On different file system and one_file_system was given */
+                        skip_entry(to,fentry);
+	        } else if (fentry->stat.st_ino == target_stat.st_ino &&  fentry->stat.st_dev == target_stat.st_dev ) {
+	                /* Attempt to recurse into target directory */
+                        show_error_dir("Skipping target directory", to, target);
+	                skip_entry(to, fentry);
+                } else if ( target_stat.st_ino == source_stat.st_ino && target_stat.st_dev == source_stat.st_dev ) {
+	                /* Attempt to recurse into source directory */
+                        show_error_dir("Skipping source directory in %s%s\n", from, target);
+                        skip_entry(from, fentry);
+                } else if (recursive) {
+	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
+                        submit_job(from, fentry, to, target, offset, dsync);
+                        /* We have a target to set the inode bits. We submit a job to set its bits */
+                        submit_job(from, fentry, to, target, DSYNC_JOB_WAIT, sync_metadata);
+                        return 0;
+	        }
     
         } else if (S_ISLNK(fentry->stat.st_mode)) {
         	if (!preserve_links) return 0;
@@ -1159,10 +1178,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 		}
 	    }
 
-	    if (create_target(from, fentry, to, fentry->name, 0) <0) {
-		/* Failed to create new entry */
-		continue;
-	    }
+            /* Create the target in a different Job */
+            submit_job(from, fentry, to, fentry->name, i, create_target);
 
 	    /* Save paths to entries having link count > 1 
 	     * for making hard links */
@@ -1173,27 +1190,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 	    }
 	}
 
-	/* Check if we should skip a subdirectory */
-	if (one_file_system &&
-                S_ISDIR(fentry->stat.st_mode) && 
-	        fentry->stat.st_dev!=from_parent->stat.st_dev) {
-	        /* On different file system and one_file_system was given */
-                skip_entry(to,fentry);
-	} else if (fentry->stat.st_ino == target_stat.st_ino && 
-		   fentry->stat.st_dev == target_stat.st_dev ) {
-	        /* Attempt to recurse into target directory */
-                fprintf(stderr,"Skipping target directory in %s%s\n",dir_path(to),tentry->name);
-	        skip_entry(to,tentry);
-	} else if ( tentry && 
-		    tentry->stat.st_ino == source_stat.st_ino &&
-		    tentry->stat.st_dev == source_stat.st_dev ) {
-	        /* Attempt to recurse into source directory */
-                fprintf(stderr,"Skipping source directory in %s%s\n",dir_path(to),tentry->name);
-                skip_entry(to,tentry);
-	} else if (S_ISDIR(fentry->stat.st_mode)) {
-	    /* All checks turned out green: we start a job to recurse to subdirectory */
-            submit_job(from, fentry, to, fentry->name, offset+1, dsync);
-	}
     }
     
     ret=0;
