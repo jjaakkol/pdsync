@@ -546,11 +546,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
     goto cleanup;
 }    
 
-int copy_regular(Directory *from,
-		 Entry *fentry,
-		 Directory *to,
-		 const char *target,
-                 off_t offset) {
+int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int fromfd=-1;
         int tofd=-1;
         struct stat from_stat;
@@ -696,12 +692,8 @@ int create_target(Directory *from,
     int tofd=dirfd(to->handle);
 
     if (S_ISREG(fentry->stat.st_mode)) {
-	/* Regular file: copy it */
-	if (copy_regular(from, fentry, to, target, -1)!=0) {
-            return -1; // copy-regular handles error counters
-	} else {
-	    return 0;
-	}
+	/* copy regular can submit jobs */
+	return copy_regular(from, fentry, to, target, -1);
     } else if (S_ISDIR(fentry->stat.st_mode)) {
 	struct stat tmp;
 	if (!recursive) return -1;
@@ -996,9 +988,7 @@ void skip_entry(Directory *to, const Entry *fentry) {
 }
 
 /* Job call back to update the inode bits */
-int sync_metadata(Directory *from_parent, Entry *fentry,
-        Directory *to, const char *target,
-        off_t offset) {
+int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
         set_thread_status("sync metadata", file_path(to, target));
                         	

@@ -131,19 +131,23 @@ int free_job(Job *job) {
         assert(job->fentry);
         assert(job->state==JOB_READY || job->state==SCAN_READY);
         assert(job->magick==0x10b10b);
-        for(Job *queue_job=pre_scan_list; queue_job; queue_job=queue_job->next) assert(queue_job->magick==0x10b10b);
 
-        /* Remove job from fentry queue  */
-        if (job->fentry->job==job && job->next && job->next->fentry==job->fentry)  {
-                job->fentry->job=job->next;
-        } else {
-                job->fentry->job=NULL;
+        /* If Job happens to be fentry queue first, update the fentry queue */
+        if (job->fentry->job==job) {
+                if (job->next && job->fentry==job->next->fentry)  {
+                        // printf("Job %p fentry queue updated %p\n", job, job->fentry);
+                        job->fentry->job=job->next;
+                } else {
+                        // printf("Job %p fentry queue clear %p. Next fentry queue %p\n", job, job->fentry, (job->next) ? job->next->fentry : NULL );
+                        job->fentry->job=NULL;
+                }
         }
 
-        /* Remove job from pre_scan_list */
+        /* Remove job from pre_scan_list Job queue */
         if (pre_scan_list==job) pre_scan_list=job->next;
         else {
                 Job *prev=pre_scan_list;
+                assert(prev->magick==0x10b10b);
                 while (prev->next != job) prev=prev->next;
                 assert(prev); // the job must be in the list
                 prev->next=job->next;
@@ -426,7 +430,7 @@ out:
                 j->ret=j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                 pthread_mutex_lock(&mut);
                 j->state=JOB_READY;
-                free_job(j);
+                free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
                 show_progress();
@@ -448,10 +452,10 @@ out:
         Job *j;
         // Run prescan jobs first, since someone is likely waiting for them
         for (j=pre_scan_list; j && (j->state!=SCAN_WAITING); j=j->next);
-        if (j && run_one_job(j)) return 1; /* one job was run, return */
+        if (j && run_one_job(j)) return 1; /* one SCAN job was run, return */
         for (j=pre_scan_list; j; j=j->next) {
-                if (j->state==JOB_WAITING && j->offset==DSYNC_JOB_WAIT && j->fentry->job && j->fentry->job!=j  ) {
-                        continue; // Waiting for previous jobs to finish
+                if (j->state==JOB_WAITING && j->offset==DSYNC_JOB_WAIT && j->fentry->job!=j ) {
+                        continue; // This job is waiting for previous jobs to finish
                 }
                 if (j->state==JOB_WAITING) break; /* run the job */
         }
@@ -582,7 +586,7 @@ int print_jobs(FILE *f) {
         Job *j=pre_scan_list;
         i=0;
         while(j) {
-                fprintf(f,"Job %d: %s%s -> %s%s state=%d\n",i++,dir_path(j->from),j->fentry->name,dir_path(j->to),(j->target)?j->target:"[NOTARGET]",j->state);
+                fprintf(f,"Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n",i++,dir_path(j->from),j->fentry->name,dir_path(j->to),(j->target)?j->target:"[NOTARGET]",j->state, j->offset, j->fentry);
                 j=j->next;
         }
         return 0;
