@@ -1,4 +1,3 @@
-pddsync
-dsync.o
-scandir.o
+pdsync
+*.o
 .vscode/
