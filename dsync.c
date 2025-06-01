@@ -18,12 +18,6 @@
 
 #include "dsync.h"
 
-#ifndef O_NOFOLLOW
-#warning "O_NOFOLLOW is not defined"
-#define O_NOFOLLOW 0
-#endif
-
-
 #define VERSIONNUM "1.9"
 #define VERSION VERSIONNUM "-" MODTIME
 
@@ -432,7 +426,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
     }
 }
 
-static long long last_ns=0;
+int long long last_ns=0;
 /* Shows the progress, obeying privacy options. Called from a thread once a second. */
 void show_progress() {
         static int last_scanned=0;
