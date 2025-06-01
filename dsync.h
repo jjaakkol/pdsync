@@ -118,6 +118,7 @@ static inline void *my_realloc(void *ptr, size_t size) {
 }
 
 extern int progress;
+extern long long last_ns;
 
 #define strdup(X) ( use_my_strdup_instead(X) )
 

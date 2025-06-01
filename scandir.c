@@ -630,9 +630,12 @@ void start_job_threads(int job_threads, Job *job) {
                 /* call show_progress() while waiting for the to finish */
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
-                ts.tv_sec += 1; // wait at most 1 second
-                int ret = pthread_cond_timedwait(&cond, &mut, &ts);
-                if (ret == ETIMEDOUT) show_progress();
+                long long next_progress=(ts.tv_nsec*1000000000+ts.tv_sec)-last_ns+1; // Progress every 1s
+                ts.tv_sec += next_progress / 1000000000;
+                ts.tv_nsec += next_progress % 1000000000;
+                if (pthread_cond_timedwait(&cond, &mut, &ts)<0 && errno==ETIMEDOUT) {
+                        show_progress();
+                }
         }
         pthread_mutex_unlock(&mut);
 
