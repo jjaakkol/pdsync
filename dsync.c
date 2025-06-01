@@ -1037,7 +1037,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        }
 
         } else if (S_ISSOCK(fentry->stat.st_mode)) {
-                show_error_dir("Ignoring socket : %s%s\n", from,fentry->name);
+                show_error_dir("Ignoring socket", from,fentry->name);
                 return 0;
 
         } else if (S_ISFIFO(fentry->stat.st_mode)) {
@@ -1054,7 +1054,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 return 0;
 
         } else {
-	        show_error_dir("Unknown file type ignored in dir: \n", from, fentry->name);
+	        show_error_dir("Unknown file type ignored in dir", from, fentry->name);
                 return -1;
         }
 
