@@ -41,7 +41,7 @@ static int recursive=0;
 static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
-static int privacy=0;
+int privacy=0;
 int progress=0;
 static int threads=4;
 uid_t myuid=0;
@@ -540,12 +540,14 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         int ret=0;
         off_t copy_job_size=128*1024*1024;
         int num_jobs=0;
+        char buf[32];
 
         assert(from && to && fentry);
         const char *source=fentry->name;
         assert(source && target);
 
-        set_thread_status(file_path(to,target),"copy");
+        snprintf(buf,sizeof(buf)-1,"copy %ld", offset/copy_job_size);
+        set_thread_status(file_path(to,target),buf);
 
         fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
@@ -574,7 +576,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         }
 	        }
 
-
 	        sparse_copy=preserve_sparse;
 
                 if (dryrun) {
@@ -590,39 +591,41 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                 }
                 offset=0;
-    }
+        }
 
-    if (sparse_copy) {
-	/* Copy loop which handles sparse blocks */
-	char *spbuf=NULL;
-	int bsize=4096; // 4096 is the default size of many fs blocks
-        int r;
 
-	spbuf=my_malloc(bsize);
+        if (sparse_copy) {
+	        // TODO: fix this.
+                /* Copy loop which handles sparse blocks */
+	        char *spbuf=NULL;
+	        int bsize=4096; // 4096 is the default size of many fs blocks
+                int r;
+
+        	spbuf=my_malloc(bsize);
 	
-        /* Read and skip blocks with only zeros */
-	while( (r=read(fromfd,spbuf,bsize)) > 0 ) {
-	    int written=0;
-	    while(written<r && spbuf[written]==0) written++;
-	    if (written==bsize) {
-		/* Found a block of zeros */
-		if (lseek(tofd,bsize,SEEK_CUR)<0) {
-                        write_error("lseek", to, target);
-                        goto fail;
-		}
-		opers.sparse_bytes+=written;
-	    } else {
-		written=0;
-	    }
-	    while (written<r) {
-		int w=write(tofd,spbuf+written,r-written);
-		if (w<0) {
-                        write_error("write", to, target);
-                        goto fail;
-		}
-		written+=w;
-		opers.bytes_copied+=w;
-	    }
+                /* Read and skip blocks with only zeros */
+	        while( (r=read(fromfd,spbuf,bsize)) > 0 ) {
+	                int written=0;
+	                while(written<r && spbuf[written]==0) written++;
+	                if (written==bsize) {
+		        /* Found a block of zeros */
+		        if (lseek(tofd,bsize,SEEK_CUR)<0) {
+                                write_error("lseek", to, target);
+                                goto fail;
+		        }
+		        opers.sparse_bytes+=written;
+	        } else {
+		        written=0;
+	        }
+	        while (written<r) {
+		        int w=write(tofd,spbuf+written,r-written);
+		        if (w<0) {
+                                write_error("write", to, target);
+                                goto fail;
+		        }
+		        written+=w;
+		        opers.bytes_copied+=w;
+	        }
 	}
 	free(spbuf);
         if (r<0) {
@@ -630,35 +633,35 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
             goto fail;
         }
 	
-    } else {
-	/* Simple loop with no regard to filesystem block size or sparse blocks*/
-        int w=0;
-        if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
-            write_error("lseek", to, target);
-            goto fail;
+        } else {
+	        /* Simple loop with no regard to filesystem block size or sparse blocks*/
+                int w=0;
+                if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
+                        write_error("lseek", to, target);
+                        goto fail;
+                }
+                off_t towrite=copy_job_size;
+                while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
+                        opers.bytes_copied+=w;
+                        towrite-=w;
+                }
+	        if (w<0) {
+                        write_error("write", to, target);
+                        goto fail;
+        	}
         }
-        off_t towrite=copy_job_size;
-        while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
-                opers.bytes_copied+=w;
-                towrite-=w;        }
-	if (w<0) {
-                write_error("write", to, target);
-                goto fail;
-	}
-    }
 
- end:
-    if (fromfd>=0) {
-	close(fromfd);    
-    }
-    if (tofd>=0) close(tofd);
+        end:
+        if (fromfd>=0) close(fromfd);    
+        if (tofd>=0) close(tofd);
 
-    set_thread_status(file_path(to,target),"copied");
-    return ret;
+        snprintf(buf,sizeof(buf)-1,"copied %ld", offset/copy_job_size);
+        set_thread_status(file_path(to,target),buf);
 
+        return ret;
  fail:
-    ret = 1;
-    goto end;
+        ret = -1;
+        goto end;
 }
 
 /* Remove one entry from a directory */
@@ -986,6 +989,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        if (fstatat(tofd,target,&target_stat,AT_SYMLINK_NOFOLLOW)<0) {
                         if  (errno==ENOENT ) {
 	                        item("MD",to,target);
+                                set_thread_status(file_path(to,target),"mkdir");
 	                        if (!dryrun && (mkdirat(tofd,target,0777)<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
                                         write_error("mkdir", to, target);
                                         return -1;

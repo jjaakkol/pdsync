@@ -40,20 +40,27 @@ const char *dir_path(const Directory *d) {
         _Thread_local static int len;
         if (d) {
                 dir_path(d->parent);
-                len+=snprintf(buf+len,MAXLEN-len,"%s/",d->name);
+                if (privacy && d->parent_entry && d->parent_entry->stat.st_uid!=0 && d->parent_entry->stat.st_uid != getuid()) {
+                        len+=snprintf(buf+len,MAXLEN-len,"[%ld]/" ,d->stat.st_ino);
+                } else {
+                        len+=snprintf(buf+len,MAXLEN-len,"%s/", d->name);
+                }
         } else len=snprintf(buf,MAXLEN,"%s","");
         return buf; 
 }
 
 const char *file_path(const Directory *d, const char *f) {
         _Thread_local static char buf[MAXLEN];
-
-        snprintf(buf,sizeof(buf),"%s%s",dir_path(d),f);
+        if (privacy && d && d->parent_entry && d->parent_entry->stat.st_uid!=0 && d->parent_entry->stat.st_uid != getuid()) {
+                snprintf(buf,sizeof(buf),"%s%s",dir_path(d),"[PRIVACY]");
+        } else {
+                snprintf(buf,sizeof(buf),"%s%s",dir_path(d),f);
+        }
         return buf; 
 }
 
 void show_error_dir(const char *message, const Directory *parent, const char *file) {
-        fprintf(stderr,"Error: %s : %s : %s%s\n",message,strerror(errno),dir_path(parent),file);
+        fprintf(stderr,"Error: %s : %s : %s%s\n",message, strerror(errno), dir_path(parent),file);
 }
 
 /* gets a file handle to Directory, possibly reopening it */
@@ -406,7 +413,7 @@ out:
 
         case SCAN_WAITING:
                 j->state=SCAN_RUNNING;
-                set_thread_status(file_path(j->from, j->fentry->name),"scanning dir");
+                mark_job_start(file_path(j->from, j->fentry->name),"scanning dir");
                 pthread_mutex_unlock(&mut);
                 j->result=scan_directory(j->from,j->fentry);
                 /* Don't keep prescanned directories open to conserve filedescriptos */
@@ -426,7 +433,7 @@ out:
                 assert(j->magick==0x10b10b);
                 j->state=JOB_RUNNING;
                 assert(j->fentry);
-                set_thread_status(file_path(j->from, j->fentry->name) ,"job started");
+                mark_job_start(file_path(j->from, j->fentry->name) ,"job started");
                 pthread_mutex_unlock(&mut);
                 j->ret=j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                 pthread_mutex_lock(&mut);
@@ -479,6 +486,7 @@ out:
         if (j && run_one_job(j)) return 1; /* one job was run, return */
 
         /* No jobs to run, we wait */
+        mark_job_start(NULL,"idle");
         scans.idle_threads++;
         pthread_cond_wait(&cond,&mut);
         scans.idle_threads--;
@@ -490,14 +498,25 @@ struct ThreadStatus {
         pthread_mutex_t mut;
         char status[MAXLEN];
         struct ThreadStatus *prev;
+        struct timespec job_start;
 };
 static _Thread_local struct ThreadStatus status = PTHREAD_MUTEX_INITIALIZER;
 static struct ThreadStatus *first_status=NULL;
 
+void set_thread_status_unlocked(const char *file, const char *s) {
+        snprintf(status.status,MAXLEN-1,"%-12s : %.100s",s, (file)?file:"");
+}
 void set_thread_status(const char *file, const char *s) {
         if (progress<3) return; 
         pthread_mutex_lock(&status.mut);
-        snprintf(status.status,MAXLEN-1,"%-12s : %.100s",s, (file)?file:"");
+        set_thread_status_unlocked(file,s);
+        pthread_mutex_unlock(&status.mut);
+}
+
+void mark_job_start(const char *file, const char *s) {
+        pthread_mutex_lock(&status.mut);
+        set_thread_status_unlocked(file, s);
+        clock_gettime(CLOCK_BOOTTIME, &status.job_start);
         pthread_mutex_unlock(&status.mut);
 }
 
@@ -507,9 +526,9 @@ void *job_queue_loop(void *arg) {
         pthread_mutex_lock(&mut);
         status.prev=first_status;
         first_status=&status;
+        mark_job_start(NULL,"thread started");
         /* Loop until exit() is called*/
         while(1) {
-                set_thread_status(NULL,"idle");
                 run_any_job();
         }
         /* Never return */
@@ -598,9 +617,13 @@ int wait_for_entry(Entry *e) {
 /* Debugging. Assume mutex is held */
 int print_jobs(FILE *f) {
         int i=0;
+        struct timespec now;
 
+        clock_gettime(CLOCK_BOOTTIME, &now);
         for (struct ThreadStatus *s=first_status; s; s=s->prev) {
-                fprintf(f,"Thread %3d: %s\n", i, s->status);
+                long long idle = (now.tv_sec - s->job_start.tv_sec) * 1000LL +
+                                                 (now.tv_nsec - s->job_start.tv_nsec) / 1000000LL;
+                fprintf(f,"Thread %3d : %4lldms : %s\n", i, idle, s->status);
                 i++;
         }
         if (progress<5) return 0;
