@@ -40,8 +40,9 @@ const char *dir_path(const Directory *d) {
         _Thread_local static int len;
         if (d) {
                 dir_path(d->parent);
-                if (privacy && d->parent_entry && d->parent_entry->stat.st_uid!=0 && d->parent_entry->stat.st_uid != getuid()) {
-                        len+=snprintf(buf+len,MAXLEN-len,"[%ld]/" ,d->stat.st_ino);
+                if (privacy && d->parent && d->parent->parent_entry && 
+                        d->parent->parent_entry->stat.st_uid!=0 && d->stat.st_uid != getuid()) {
+                        len+=snprintf(buf+len,MAXLEN-len,"[0x%lx]/" ,d->stat.st_ino);
                 } else {
                         len+=snprintf(buf+len,MAXLEN-len,"%s/", d->name);
                 }
@@ -51,7 +52,7 @@ const char *dir_path(const Directory *d) {
 
 const char *file_path(const Directory *d, const char *f) {
         _Thread_local static char buf[MAXLEN];
-        if (privacy && d && d->parent_entry && d->parent_entry->stat.st_uid!=0 && d->parent_entry->stat.st_uid != getuid()) {
+        if (privacy && d && d->parent_entry && d->stat.st_uid!=0 && d->stat.st_uid != getuid()) {
                 snprintf(buf,sizeof(buf),"%s%s",dir_path(d),"[PRIVACY]");
         } else {
                 snprintf(buf,sizeof(buf),"%s%s",dir_path(d),f);
