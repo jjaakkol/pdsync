@@ -621,10 +621,11 @@ int print_jobs(FILE *f) {
         struct timespec now;
 
         clock_gettime(CLOCK_BOOTTIME, &now);
+        fprintf(f,"Thread: runtime : job\n");
         for (struct ThreadStatus *s=first_status; s; s=s->prev) {
                 long long idle = (now.tv_sec - s->job_start.tv_sec) * 1000LL +
                                                  (now.tv_nsec - s->job_start.tv_nsec) / 1000000LL;
-                fprintf(f,"Thread %3d : %4lldms : %s\n", i, idle, s->status);
+                fprintf(f,"%5d : %5lldms : %s\n", i, idle, s->status);
                 i++;
         }
         if (progress<5) return 0;
