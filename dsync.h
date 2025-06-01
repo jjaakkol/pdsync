@@ -32,25 +32,27 @@ typedef struct {
     char *name;
     struct stat stat;
     char *link;
-    int error;                  /* If there was a IO error with stat() */
-    struct JobStruct *job;      /* If this entry has a job associated to it */
-    struct JobStruct *wait_queue; /* Jobs waiting for this entry to be done */
+    int error;                     /* If there was a IO error with stat() */
+    struct JobStruct *job;         /* If this entry has a job associated to it */
+    struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
     struct DirectoryStruct *dir;
 } Entry;
 
 /* We keep the fd of all directories around until the directories are processed to be able to use 
    openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
 typedef struct DirectoryStruct {
-    int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
-    DIR *handle;
-    int fd;
-    struct stat stat;
-    struct DirectoryStruct *parent;
-    Entry *parent_entry;
-    char *name;
-    int entries;
-    int refs;
-    Entry *array;
+        int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
+        DIR *handle;
+        int fd;
+        struct stat stat;
+        struct DirectoryStruct *parent;
+        Entry *parent_entry;
+        char *name;
+        int entries;
+        int descendants; /* Total number of known descendants, which grows while they are being scanned. */
+        int refs;
+        struct dirent *dents;
+        Entry *array;
 } Directory;
 
 typedef struct {

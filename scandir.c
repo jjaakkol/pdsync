@@ -29,25 +29,19 @@ pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 Job *pre_scan_list=NULL;
 
-static int my_strcmp(const void *x, const void *y) {
-    const char *a=*(const char **)x;
-    const char *b=*(const char **)y;
-    return strcmp(a,b);
-}
-
 const char *dir_path(const Directory *d) {
         _Thread_local static char buf[MAXLEN];
         _Thread_local static int len;
         if (d) {
                 dir_path(d->parent);
-                if (privacy && d->parent && d->parent->parent_entry && 
+                if (privacy && d->parent && d->parent->parent_entry &&
                         d->parent->parent_entry->stat.st_uid!=0 && d->stat.st_uid != getuid()) {
                         len+=snprintf(buf+len,MAXLEN-len,"[0x%lx]/" ,d->stat.st_ino);
                 } else {
                         len+=snprintf(buf+len,MAXLEN-len,"%s/", d->name);
                 }
         } else len=snprintf(buf,MAXLEN,"%s","");
-        return buf; 
+        return buf;
 }
 
 const char *file_path(const Directory *d, const char *f) {
@@ -57,7 +51,7 @@ const char *file_path(const Directory *d, const char *f) {
         } else {
                 snprintf(buf,sizeof(buf),"%s%s",dir_path(d),f);
         }
-        return buf; 
+        return buf;
 }
 
 void show_error_dir(const char *message, const Directory *parent, const char *file) {
@@ -114,9 +108,9 @@ void d_freedir_locked(Directory *dir) {
                 Entry *e=&dir->array[dir->entries];
                 assert(!e->job); // no job should be running on this entry
 	        if (e->link) free(e->link);
-                free(dir->array[dir->entries].name);
         }
         free(dir->array);
+        free(dir->dents);
 
         dir->magick=0xDADDEAD;
         if (dir->handle) closedir(dir->handle);
@@ -189,7 +183,7 @@ Entry *init_entry(Entry * entry, int dfd, char *name) {
 	    if ( (link_len=readlinkat(dfd, name, linkbuf, sizeof(linkbuf)-1)) <=0 ) {
 		/* Failed to read link. */
 		show_error("readlink",name);
-		/* FIXME: read errors is not visible here: 
+		/* FIXME: read errors is not visible here:
                 opers.read_errors++; */
 	    } else {
 		/* Save the link */
@@ -202,112 +196,110 @@ Entry *init_entry(Entry * entry, int dfd, char *name) {
         return entry;
 }
 
-/* scan_directory can be called from multiple threads */
-Directory *scan_directory(Directory *parent, Entry *fentry) {
-    DIR *d=NULL;
-    int dfd=-1;
-    Directory *nd=NULL;
-    struct dirent *dent;
-    int i;
-    int allocated=16;
-    int entries=0;
-    char **names=NULL;
-    const char *name = fentry->name;
+int read_directory(Directory *parent, Entry *entry, Directory *not_used_d, const char *notused, off_t offset) {
+        int allocated=1024;
+        int dfd=-1;
+        Directory *nd=NULL;
+        DIR *d=NULL;
+        struct stat tmp_stat;
+        int entries=0;
 
-    assert(!parent || parent->magick!=0xDADDEAD);
-    assert(!parent || parent->magick==0xDADDAD);
+        assert(!parent || parent->magick!=0xDADDEAD);
+        assert(!parent || parent->magick==0xDADDAD);
 
-    if ( (dfd=dir_openat(parent, name))<0 ||
-         (d=fdopendir(dfd))==NULL) {
-                show_error_dir("scan_directory", parent,name);
-                if (dfd>=0) close(dfd);     
-        return NULL;
-    }
-
-    names=my_calloc(allocated, sizeof(char*));
-
-    /* Allocate the Directory structure */
-    nd=my_calloc(1,sizeof(Directory));
-    nd->parent=parent;
-    nd->name=my_strdup(name);
-    nd->parent_entry=fentry;
-    nd->handle=d;
-    nd->fd=dfd;
-    nd->refs=1; /* The directory is now referenced once */
-    if (fstat(dfd, &nd->stat)<0) goto fail;
-
-    /* scan the directory */
-    while( (dent=readdir(d)) ) {
-	if (entries==allocated) {
-	    /* Allocate more space for names */
-	    char **tmp_names=NULL;
-	    
-	    allocated+=allocated/2;
-	    tmp_names=my_realloc(names,sizeof(char *)*allocated);
-	    names=tmp_names;	    
-	}
-	if (dent->d_name[0]=='.') {
-	    /* Skip '.' and '..' */
-	    if (dent->d_name[1]==0) continue; 
-	    if (dent->d_name[1]=='.' && dent->d_name[2]==0) continue;
-	}
-	if ( (names[entries]=my_strdup(dent->d_name))==NULL ) goto fail;
-	entries++;
-    } 
-
-    /* scandir might be faster, if done in inode order. */    
-    qsort(names,entries,sizeof(names[0]),my_strcmp);    
-
-    nd->array=my_calloc(entries, sizeof(Entry));
-    nd->entries=entries;
-
-    /* Initialize all entries in a directory  */
-    for (i=0;i<nd->entries;i++) {
-	assert(i==0 || my_strcmp(&names[i-1],&names[i])<0);
-        init_entry(&nd->array[i], dfd, names[i]);
-    }
-
-    /* Names is no longer needed */
-    free(names);
-    names=NULL;
-    
-    nd->magick=0xDADDAD;
-
-    return nd;
-
-    fail:
-    /* Something did not work out. Clean up */
-    if (nd) {
-        if (nd->array) {
-                for(int i=0; nd->array && i<nd->entries;i++) {
-                        if (nd->array[i].name) free(nd->array[i].name);
-	                if (nd->array[i].link) free(nd->array[i].link);
-                }
-	        free(nd->array);
+        set_thread_status(file_path(parent,entry->name), "readdir");
+        if ( (dfd=dir_openat(parent, entry->name))<0 || (d=fdopendir(dfd))==NULL || fstat(dfd, &tmp_stat)<0) {
+                show_error_dir("opendir", parent, entry->name);
+                if (dfd>=0) close(dfd);
+                return 0;
         }
-    }
-    while(entries>0) {
-	entries--;
-	free(names[entries]);
-    }
-    if (names) free(names);
-    if (d) closedir(d);
-    return NULL;
+
+        /* Read the directory and save the names and dents */
+        struct dirent *dents=my_calloc(allocated, sizeof(struct dirent));
+        errno=0;
+        struct dirent *dent;
+        while( (dent = readdir(d)) ) {
+                if (dent->d_name[0]=='.') {
+                        /* Skip '.' and '..' */
+                        if (dent->d_name[1]==0) continue;
+                        if (dent->d_name[1]=='.' && dent->d_name[2]==0) continue;
+                }
+                if (entries==allocated) {
+                        allocated+=allocated/2;
+                        dents=my_realloc(dents, sizeof(struct dirent)*allocated);
+                }
+                dents[entries]=*dent;
+                entries++;
+        }
+        if (errno) {
+                show_error_dir("readdir", parent, entry->name);
+                free(dents);
+                return -1;
+        }
+
+        /* Allocate the Directory structure */
+        nd=my_calloc(1,sizeof(Directory));
+        nd->parent=parent;
+        nd->name=my_strdup(entry->name);
+        nd->parent_entry=entry;
+        nd->handle=d;
+        nd->fd=dfd;
+        nd->refs=1; /* The directory is now referenced once */
+        memcpy(&nd->stat, &tmp_stat, sizeof(tmp_stat));
+
+        nd->dents=dents;
+        entry->dir=nd;
+        nd->entries=entries;
+        nd->magick=0xDADDAD;
+
+        /* FIXME: get a mutex here */
+        if (parent) parent->descendants+=entries;
+        return 0;
+}
+
+static int entrycmp(const void *x, const void *y) {
+    const Entry *a=(Entry *)x;
+    const Entry *b=(Entry *)y;
+    return strcmp(a->name,b->name);
+}
+
+/* scan_directory can be called from multiple threads */
+Directory *scan_directory(Directory *parent, Entry *entry) {
+        assert(!parent || parent->magick!=0xDADDEAD);
+        assert(!parent || parent->magick==0xDADDAD);
+
+        /* This needs a mutex */
+        if (entry->dir==NULL) read_directory(parent, entry, NULL, NULL, 0);
+        if (entry->dir==NULL) return NULL;
+
+        Directory *nd=entry->dir;
+        set_thread_status(file_path(parent,entry->name), "scandir");
+
+        nd->array=my_calloc(nd->entries, sizeof(Entry));
+        /* Initialize all entries in a directory  */
+        for (int i=0; i<nd->entries; i++) {
+                init_entry(&nd->array[i], nd->fd, nd->dents[i].d_name);
+        }
+
+        qsort(nd->array, nd->entries, sizeof(nd->array[0]), entrycmp);
+        for (int i=1; i<nd->entries; i++) assert(strcmp(nd->array[i-1].name,nd->array[i].name)<=0);
+
+        return nd;
 }
 
 
 /* Threaded directory scan:
  * - if we know nothing of the directory scan it in this thread
  * - If it is already waiting in queue scan it in this thread.
- * - If it is already being scanned by another thread, wait for it. 
- * - If it has been already scanned by another thread use the result. 
+ * - If it is already being scanned by another thread, wait for it.
+ * - If it has been already scanned by another thread use the result.
  * - Launch directory scan jobs for subdirectories found.
  */
 Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         Directory *result=NULL;
         const char *path=dir->name;
         int i;
-        
+
         assert(dir);
         assert(!dir->job || dir->job->magick==0x10b10b);
 
@@ -369,7 +361,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         /* Lots of stats gathered */
         scans.dirs_scanned++;
         if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max=scans.dirs_active;
-        scans.entries_active+=result->entries;            
+        scans.entries_active+=result->entries;
 
         /* Now add the newly found directories to the job queue for pre scan */
         for(i=result->entries-1; i>=0; i--) {
@@ -396,7 +388,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                         if (scans.queued > scans.maxjobs) scans.maxjobs=scans.queued;
 	        }
         }
-    
+
 out:
         pthread_cond_broadcast(&cond);
         pthread_mutex_unlock(&mut);
@@ -473,8 +465,8 @@ out:
  /* This is called:
   * - by the job queue thread to run jobs
   * - when threads are waiting for another thread to finish a job
-  * This is called with the lock held. 
-  * This is where we would apply a scheduling policy, if there was one. 
+  * This is called with the lock held.
+  * This is where we would apply a scheduling policy, if there was one.
   */
  int run_any_job() {
         Job *j;
@@ -508,7 +500,7 @@ void set_thread_status_unlocked(const char *file, const char *s) {
         snprintf(status.status,MAXLEN-1,"%-12s : %.100s",s, (file)?file:"");
 }
 void set_thread_status(const char *file, const char *s) {
-        if (progress<3) return; 
+        if (progress<3) return;
         pthread_mutex_lock(&status.mut);
         set_thread_status_unlocked(file,s);
         pthread_mutex_unlock(&status.mut);
@@ -565,7 +557,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
                 while (prev->next && prev->next->fentry == fentry) prev=prev->next;
                 job->next=prev->next;
                 prev->next=job;
-        } else { 
+        } else {
                 /* Put it first to global queue, if there was not a fentry queue, to run jobs depth first */
                 job->next=pre_scan_list;
                 pre_scan_list=job;
@@ -577,7 +569,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         scans.jobs++;
         if ( ++scans.queued > scans.maxjobs ) scans.maxjobs=scans.queued;
         pthread_cond_broadcast(&cond);
-        pthread_mutex_unlock(&mut); 
+        pthread_mutex_unlock(&mut);
 
         return job;
 }
