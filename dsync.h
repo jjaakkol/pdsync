@@ -118,7 +118,6 @@ static inline void *my_realloc(void *ptr, size_t size) {
 }
 
 extern int progress;
-extern long long last_ns;
 
 #define strdup(X) ( use_my_strdup_instead(X) )
 
@@ -144,6 +143,6 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 int run_any_job();
 int print_jobs(FILE *f);
 void set_thread_status(const char *file, const char *status);
-void show_progress();
+void print_progress();
 int dir_openat(Directory *parent, const char *name);
 int dir_getfd(Directory *d);

@@ -420,7 +420,6 @@ out:
                 j->state=SCAN_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
-                show_progress();
                 return 1;
 
         case JOB_WAITING:
@@ -438,12 +437,15 @@ out:
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 if (wj) {
                         // Schedule the wait queue job, if there was one */
+                        assert(wj->offset==DSYNC_FILE_WAIT || wj->offset==DSYNC_DIR_WAIT);
                         Job *i;
+                        // Find if there are any jobs to be waited left
                         for (i=pre_scan_list; i; i=i->next) {
                                 if (i->fentry==wj->fentry) break;
-                                if (i->from && i->from->parent_entry==wj->fentry) break;
+                                if (wj->offset==DSYNC_DIR_WAIT && i->from && i->from->parent_entry==wj->fentry) break;
                         }
                         if (i==NULL) {
+                                // Schedule the job that was waiting
                                 wj->next=pre_scan_list;
                                 pre_scan_list=wj;
                                 wj->fentry->wait_queue=NULL;
@@ -472,9 +474,6 @@ out:
         for (j=pre_scan_list; j && (j->state!=SCAN_WAITING); j=j->next);
         if (j && run_one_job(j)) return 1; /* one SCAN job was run, return */
         for (j=pre_scan_list; j; j=j->next) {
-                if (j->state==JOB_WAITING && j->offset==DSYNC_FILE_WAIT && j->fentry->job!=j ) {
-                        continue; // This job is waiting for previous jobs to finish
-                }
                 if (j->state==JOB_WAITING) break; /* run the job */
         }
         if (j && run_one_job(j)) return 1; /* one job was run, return */
@@ -537,7 +536,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         for(Job *queue_job=pre_scan_list; queue_job; queue_job=queue_job->next) assert(queue_job->magick==0x10b10b);
         if (job->from) job->from->refs++;
         if (job->to) job->to->refs++;
-        if (job->offset==DSYNC_DIR_WAIT) {
+        if (job->offset==DSYNC_FILE_WAIT || job->offset==DSYNC_DIR_WAIT) {
                 assert(job->fentry->wait_queue==NULL);
                 job->fentry->wait_queue=job; // Put it to wait queue
         } else if (fentry->job) {
@@ -616,6 +615,8 @@ int print_jobs(FILE *f) {
 
 void start_job_threads(int job_threads, Job *job) {
         pthread_t threads[job_threads];
+        long long last_ns=0;
+
         for(int i=0; i<job_threads; i++) {
                 if (pthread_create(&threads[i],NULL,job_queue_loop,NULL)<0) {
 	                perror("thread_create");
@@ -625,17 +626,23 @@ void start_job_threads(int job_threads, Job *job) {
         //printf("Started %d job threads.\n",job_threads);
         pthread_mutex_lock(&mut);
         pthread_cond_broadcast(&cond); /* Kickstart the threads */
+        /* Show progress until all jobs are finished. */
         while(scans.queued > 0) {
                 assert(pre_scan_list);
                 /* call show_progress() while waiting for the to finish */
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
-                long long next_progress=(ts.tv_nsec*1000000000+ts.tv_sec)-last_ns+1; // Progress every 1s
-                ts.tv_sec += next_progress / 1000000000;
-                ts.tv_nsec += next_progress % 1000000000;
-                if (pthread_cond_timedwait(&cond, &mut, &ts)<0 && errno==ETIMEDOUT) {
-                        show_progress();
+                long long now = ts.tv_sec*1000000000L + ts.tv_nsec;
+                if (now-last_ns > 1000000000) {
+                        // FIXME we are calling print_progress with lock_held and that might hang IO
+                        print_progress();
+                        last_ns=now;
                 }
+                ts.tv_sec += +1;
+                if (pthread_cond_timedwait(&cond, &mut, &ts)<0 && errno==ETIMEDOUT) {
+                        fprintf(stderr,"No IO in 1s. Slow fs or deadlock?\n");
+                }
+
         }
         pthread_mutex_unlock(&mut);
 

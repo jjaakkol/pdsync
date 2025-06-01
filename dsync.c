@@ -426,25 +426,20 @@ static void print_opers(FILE *stream, const Opers *stats) {
     }
 }
 
-int long long last_ns=0;
-/* Shows the progress, obeying privacy options. Called from a thread once a second. */
-void show_progress() {
+/* Print the progress to ttysream, obeying privacy options. Called from a thread once a second, with mutex locked */
+void print_progress() {
         static int last_scanned=0;
         static long long last_bytes;
-        static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+        static long long last_ns=0;
 
         char B[32];
         char BpS[32];
 
         if (!progress) return;
  
-        /* Multiple threads might call us*/
-        pthread_mutex_lock(&lock);
- 
         struct timespec now;
         clock_gettime(CLOCK_BOOTTIME, &now);
         long long now_ns = now.tv_nsec + now.tv_sec * 1000000000L;
-        if (now_ns - last_ns < 1000000000L) goto out; 
 
         // I've spent too long this...
         if (progress>=2) {
@@ -467,8 +462,6 @@ void show_progress() {
         last_scanned=scans.entries_scanned;
         last_bytes=opers.bytes_copied;
         last_ns=now_ns;
-        out:
-        pthread_mutex_unlock(&lock);
 }
 
 int remove_hierarchy(Directory *parent, Entry *tentry) {
@@ -1276,10 +1269,7 @@ int main(int argc, char *argv[]) {
         struct tm *t = localtime(&now);
         char buf[64];
         tty_stream=stdout;
-        last_ns=0; /* Force progress to show */
-        show_progress();
-        //if (progress<2) print_opers(stdout,&opers);
-        //if (progress<3) print_scans(&scans);
+        print_progress();
 
         strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
         printf("Pdsync %s finished at %s\n",VERSION,buf);
