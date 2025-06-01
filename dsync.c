@@ -207,7 +207,7 @@ const char *format_bytes(long long bytes, char output[static 32]) {
         } else if (bytes < 1024LL << 30) {
                 snprintf(output, 32, "%.1fGiB", bytes / (1024.0 * 1024 * 1024));
         } else {
-                snprintf(output, 32, "%.1fTiB", bytes / (1024.0 * 1024 * 1024));
+                snprintf(output, 32, "%.1fTiB", bytes / (1024.0 * 1024 * 1024 * 1024));
         }
         return output;
 }
@@ -258,7 +258,7 @@ static int parse_options(int argc, char *argv[]) {
 	case THREADS: {
                         char *endptr=NULL;
                         threads=strtol(optarg,&endptr,10);
-                        if (!optarg[0] || *endptr || threads<0 || threads > 256 ) {
+                        if (!optarg[0] || *endptr || threads<1 || threads > 256 ) {
                                 fprintf(stderr,"Invalid value given to --threads: '%s'\n",optarg);
                                 exit(1);
                         }
@@ -893,7 +893,7 @@ void skip_entry(Directory *to, const Entry *fentry) {
 /* Job call back to update the inode bits */
 int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
-        set_thread_status("sync metadata", file_path(to, target));
+        set_thread_status(file_path(to, target),"metadata");
                         	
         /* Lookup the existing inode bits */
         struct stat to_stat;      
