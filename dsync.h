@@ -42,7 +42,6 @@ typedef struct {
    openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
 typedef struct DirectoryStruct {
         int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
-        DIR *handle;
         int fd;
         struct stat stat;
         struct DirectoryStruct *parent;

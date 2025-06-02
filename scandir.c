@@ -113,7 +113,7 @@ void d_freedir_locked(Directory *dir) {
         free(dir->dents);
 
         dir->magick=0xDADDEAD;
-        if (dir->handle) closedir(dir->handle);
+        if (dir->fd>=0) close (dir->fd);
 
         free(dir->name);
         dir->entries=-123; /* Magic value to debug a race */
@@ -176,21 +176,20 @@ Entry *init_entry(Entry * entry, int dfd, char *name) {
                 entry->error=errno;
 	        show_error("fstatat",name);
 	} else if (S_ISLNK(entry->stat.st_mode)) {
-	    /* Read the symlink if there is one. FIXME: maybe skip this if we don't have --preserve-links */
-	    char linkbuf[MAXLEN];
-	    int link_len;
-
-	    if ( (link_len=readlinkat(dfd, name, linkbuf, sizeof(linkbuf)-1)) <=0 ) {
-		/* Failed to read link. */
-		show_error("readlink",name);
-		/* FIXME: read errors is not visible here:
-                opers.read_errors++; */
-	    } else {
-		/* Save the link */
-                entry->link=my_malloc(link_len+1);
-		memcpy(entry->link, linkbuf, link_len);
-		entry->link[link_len]=0;
-	    }
+	        /* Read the symlink if there is one. FIXME: maybe skip this if we don't have --preserve-links */
+	        char linkbuf[MAXLEN];
+	        int link_len;
+	        if ( (link_len=readlinkat(dfd, name, linkbuf, sizeof(linkbuf)-1)) <=0 ) {
+		        /* Failed to read link. */
+		        show_error("readlink",name);
+		        /* FIXME: read errors is not visible here:
+                        opers.read_errors++; */
+	        } else {
+		        /* Save the link */
+                        entry->link=my_malloc(link_len+1);
+		        memcpy(entry->link, linkbuf, link_len);
+		        entry->link[link_len]=0;
+	        }
 	}
         scans.entries_scanned++;
         return entry;
@@ -236,14 +235,14 @@ int read_directory(Directory *parent, Entry *entry, Directory *not_used_d, const
                 free(dents);
                 return -1;
         }
+        closedir(d);
 
         /* Allocate the Directory structure */
         nd=my_calloc(1,sizeof(Directory));
         nd->parent=parent;
         nd->name=my_strdup(entry->name);
         nd->parent_entry=entry;
-        nd->handle=d;
-        nd->fd=dfd;
+        nd->fd=-1;
         nd->refs=1; /* The directory is now referenced once */
         memcpy(&nd->stat, &tmp_stat, sizeof(tmp_stat));
 
@@ -271,10 +270,15 @@ Directory *scan_directory(Directory *parent, Entry *entry) {
         /* This needs a mutex */
         if (entry->dir==NULL) read_directory(parent, entry, NULL, NULL, 0);
         if (entry->dir==NULL) return NULL;
-
         Directory *nd=entry->dir;
+        if (nd->array) return nd;
+
         set_thread_status(file_path(parent,entry->name), "scandir");
 
+        if (dir_getfd(nd)<0) {
+                d_freedir(nd);
+                return NULL;
+        }
         nd->array=my_calloc(nd->entries, sizeof(Entry));
         /* Initialize all entries in a directory  */
         for (int i=0; i<nd->entries; i++) {
@@ -282,7 +286,9 @@ Directory *scan_directory(Directory *parent, Entry *entry) {
         }
 
         qsort(nd->array, nd->entries, sizeof(nd->array[0]), entrycmp);
-        for (int i=1; i<nd->entries; i++) assert(strcmp(nd->array[i-1].name,nd->array[i].name)<=0);
+        //for (int i=1; i<nd->entries; i++) assert(strcmp(nd->array[i-1].name,nd->array[i].name)<=0);
+
+        set_thread_status(file_path(parent,entry->name), "scandir done");
 
         return nd;
 }
@@ -297,7 +303,6 @@ Directory *scan_directory(Directory *parent, Entry *entry) {
  */
 Directory *pre_scan_directory(Directory *parent, Entry *dir) {
         Directory *result=NULL;
-        const char *path=dir->name;
         int i;
 
         assert(dir);
@@ -337,16 +342,14 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
                 pthread_cond_broadcast(&cond); /* wake up anyone who was waiting for this */
         } else scans.pre_scan_misses++;
 
-        /* Reopen the DIR * handle of prescanned directories. */
-        if (result && result->handle==NULL) {
+        /* Reopen the fd of prescanned directories.  */
+        if (result) {
                 assert(result->parent && result->parent->magick==0xDADDAD);
-                result->fd=dir_getfd_unlocked(result);
-                if (result->fd<0 || ! (result->handle=fdopendir(result->fd)) ) {
-                        show_error("pre_scan_directory",path);
+                if (result->fd<0) result->fd=dir_getfd_unlocked(result);
+                if (result->fd<0) {
                         d_freedir(result);
                         goto out;
                 }
-
         } else {
                 set_thread_status(file_path(parent, dir->name),"scanning dir");
 	        /* The directory was not in queue or was not started. Scan it in this thread */
@@ -406,13 +409,12 @@ out:
 
         case SCAN_WAITING:
                 j->state=SCAN_RUNNING;
-                mark_job_start(file_path(j->from, j->fentry->name),"scanning dir");
+                mark_job_start(file_path(j->from, j->fentry->name),"readdir start");
                 pthread_mutex_unlock(&mut);
                 j->result=scan_directory(j->from,j->fentry);
                 /* Don't keep prescanned directories open to conserve filedescriptos */
-                if (j->result) {
-                        if (j->result->handle) closedir(j->result->handle);
-                        j->result->handle=NULL;
+                if (j->result && j->result->fd>=0) {
+                        close(j->result->fd);
                         j->result->fd=-1;
                 }
                 pthread_mutex_lock(&mut);
@@ -426,7 +428,7 @@ out:
                 assert(j->magick==0x10b10b);
                 j->state=JOB_RUNNING;
                 assert(j->fentry);
-                mark_job_start(file_path(j->from, j->fentry->name) ,"job started");
+                mark_job_start(file_path(j->from, j->fentry->name) ,"job start");
                 pthread_mutex_unlock(&mut);
                 j->ret=j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                 pthread_mutex_lock(&mut);

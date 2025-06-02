@@ -476,7 +476,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
     write_error("remove directory", parent, "PATHMISSING");
     return -1;
     }
-    dfd=dirfd(del->handle);
+    dfd=dir_getfd(del);
     fstat(dfd,&thisdir);
     if (thisdir.st_dev==source_stat.st_dev &&
 	thisdir.st_ino==source_stat.st_ino) {
@@ -518,7 +518,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
  cleanup:
     if (del) d_freedir(del);
     if (!skip_rmdir) item("RD", parent, tentry->name);
-    if (!dryrun && !skip_rmdir && unlinkat( dirfd(parent->handle), tentry->name, AT_REMOVEDIR )<0) {
+    if (!dryrun && !skip_rmdir && unlinkat( dir_getfd(parent), tentry->name, AT_REMOVEDIR )<0) {
 	write_error("rmdir", parent, tentry->name);
         return -1;
     } else {
@@ -549,12 +549,12 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         snprintf(buf,sizeof(buf)-1,"copy %ld", offset/copy_job_size);
         set_thread_status(file_path(to,target),buf);
 
-        fromfd=openat(dirfd(from->handle),source,O_RDONLY|O_NOFOLLOW);
+        fromfd=openat(dir_getfd(from),source,O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
                 write_error("open", from, source); /* FIXME: this is not a write error*/
                 goto fail;
         }
-        tofd=openat(dirfd(to->handle),target,O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
+        tofd=openat(dir_getfd(to), target, O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
         if(tofd<0) {
                 write_error("open", to, target);
                 goto fail;
@@ -652,10 +652,10 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
         end:
+        snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
         if (fromfd>=0) close(fromfd);    
         if (tofd>=0) close(tofd);
 
-        snprintf(buf,sizeof(buf)-1,"copied %ld", offset/copy_job_size);
         set_thread_status(file_path(to,target),buf);
 
         return ret;
@@ -671,7 +671,7 @@ int remove_entry(Directory *parent, Entry *tentry) {
                 remove_hierarchy(parent, tentry);
         } else {
                 item("RM",parent,name);
-                if (!dryrun && unlinkat(dirfd(parent->handle), name, 0)) {
+                if (!dryrun && unlinkat(dir_getfd(parent), name, 0)) {
                     write_error("unlink", parent, name);
                     return -1;
                 }
@@ -916,7 +916,7 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                 gid=fentry->stat.st_gid;
         }
         if (uid!=-1 || gid!=-1) {
-                if (!dryrun && fchownat(dirfd(to->handle),fentry->name, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
+                if (!dryrun && fchownat(dir_getfd(to),fentry->name, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
                         ret=errno;
                         write_error("fchownat", to, fentry->name);
                 } else {
@@ -929,7 +929,7 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
         if (preserve_permissions && 
                 !S_ISLNK(fentry->stat.st_mode) &&
                 fentry->stat.st_mode!=to_stat.st_mode) {
-                if (!dryrun && fchmodat(dirfd(to->handle), fentry->name, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
+                if (!dryrun && fchmodat(dir_getfd(to), fentry->name, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
                         ret=errno;
                         write_error("fchmodat", to, fentry->name);
                 } else {
@@ -957,7 +957,7 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                         to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
                 ) {
                         /* skip, times were right */
-                } else if (!dryrun && utimensat(dirfd(to->handle),fentry->name,tmp,AT_SYMLINK_NOFOLLOW)<0) {
+                } else if (!dryrun && utimensat(dir_getfd(to), fentry->name,tmp, AT_SYMLINK_NOFOLLOW)<0) {
                         ret=errno;
                         write_error("utimensat", to, fentry->name);
                 } else {
@@ -974,7 +974,11 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         const char *source=fentry->name;
         assert(source);
 
-        int tofd=dirfd(to->handle);
+        int tofd=dir_getfd(to);
+        if (tofd<0) {
+                write_error("Directory has gone away", to, target);
+                return -1;
+        }
 
         if (S_ISREG(fentry->stat.st_mode)) {
 	        /* copy regular might submit jobs */
