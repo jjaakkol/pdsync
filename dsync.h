@@ -27,15 +27,24 @@
 /* Maximum pathname lenght dsync can handle. FIXME: make dynamic */
 #define MAXLEN 16384
 
+typedef enum { ENTRY_CREATED,   
+                ENTRY_INIT,
+                ENTRY_WAITING,
+                ENTRY_READING,
+                ENTRY_READY
+} EntryState;
+
 /* Entry is a single entry in a directory */
 typedef struct {
-    char *name;
-    struct stat stat;
-    char *link;
-    int error;                     /* If there was a IO error with stat() */
-    struct JobStruct *job;         /* If this entry has a job associated to it */
-    struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
-    struct DirectoryStruct *dir;
+        EntryState state;
+        char *name;
+        struct stat stat;
+        char *link;
+        int error;                     /* If there was a IO error with stat() */
+        struct JobStruct *job;         /* If this entry has a job associated to it */
+        struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
+        struct DirectoryStruct *dir;
+        // pthread_mutex_t mut;
 } Entry;
 
 /* We keep the fd of all directories around until the directories are processed to be able to use 
@@ -120,6 +129,7 @@ static inline void *my_realloc(void *ptr, size_t size) {
 
 extern int progress;
 extern int privacy;
+extern int recursive; 
 
 
 #define strdup(X) ( use_my_strdup_instead(X) )
@@ -132,7 +142,9 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 #define DSYNC_FILE_WAIT -123 // Wait for all jobs to attached to From Entry to finish before starting job
 #define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
 Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+Job *submit_job_locked(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 
+Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *parent, Entry *e);
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);

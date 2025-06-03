@@ -37,7 +37,7 @@ static int preserve_devices=0;
 static int preserve_links=0;
 static int preserve_sparse=0;
 static int preserve_hard_links=0;
-static int recursive=0;
+int recursive=0;
 static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
@@ -680,23 +680,6 @@ int remove_entry(Directory *parent, Entry *tentry) {
     return 0;
 }
 
-Entry *directory_lookup(const Directory *d, const char *name) {
-    int s=0;
-    int e=d->entries;
-    int cmp=-1;
-    while(s<d->entries && s<e && 
-	  (cmp=strcmp(d->array[(s+e)/2].name,name))!=0) {
-	if (cmp<0) {
-	    s=(s+e)/2+1;
-	} else {
-	    e=(s+e)/2;
-	}
-	/* assert(s<d->entries && e<=d->entries); */
-    }
-    if (cmp==0) return &d->array[(s+e)/2];
-    return NULL;    
-}
-
 static int should_exclude(const Directory *from, const Entry *entry) {
     Exclude *e=exclude_list;
 
@@ -1028,7 +1011,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
-                        submit_job(from, fentry, to, target, offset, dsync);
+                        submit_job(from, fentry, to, target, 0, dsync);
                         /* We have a target to set the inode bits. We submit a job to set its bits */
                         submit_job(from, fentry, to, target, DSYNC_DIR_WAIT, sync_metadata);
                         return 0;
