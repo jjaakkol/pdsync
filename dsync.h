@@ -59,7 +59,7 @@ typedef struct DirectoryStruct {
         int entries;
         int descendants; /* Total number of known descendants, which grows while they are being scanned. */
         int refs;
-        struct dirent *dents;
+        struct DentStruct *dents;
         Entry *array;
         pthread_mutex_t mut;
 } Directory;

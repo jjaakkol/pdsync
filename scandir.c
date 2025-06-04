@@ -27,6 +27,11 @@ typedef struct JobStruct
         off_t offset;
 } Job;
 
+typedef struct DentStruct {
+        char *name;
+        ino_t d_ino;
+        unsigned char d_type;
+} Dent;
 
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -324,7 +329,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         }
 
         /* Read the directory and save the names and dents */
-        struct dirent *dents = my_calloc(allocated, sizeof(struct dirent));
+        Dent *dents = my_calloc(allocated, sizeof(*dents));
         errno = 0;
         struct dirent *dent;
         while ((dent = readdir(d)))
@@ -340,9 +345,11 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 if (entries == allocated)
                 {
                         allocated += allocated / 2;
-                        dents = my_realloc(dents, sizeof(struct dirent) * allocated);
+                        dents = my_realloc(dents, sizeof(*dents) * allocated);
                 }
-                dents[entries] = *dent;
+                dents[entries].name = my_strdup(dent->d_name);
+                dents[entries].d_ino = dent->d_ino;
+                dents[entries].d_type = dent->d_type;
                 entries++;
         }
         if (errno)
@@ -368,7 +375,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         pthread_mutex_init(&nd->mut, 0);
 
         for (int i = 0; i < entries; i++) {
-                nd->array[i].name=my_strdup(nd->dents[i].d_name);
+                nd->array[i].name=nd->dents[i].name;
         }
 
         /* The entries need to be sorted alphabetically */
@@ -378,7 +385,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         /* Init the entry array for Directories and submit jobs */
         for (int i = 0; recursive && i < entries; i++) {
                 if (nd->dents[i].d_type==DT_DIR) {
-                        Entry *e=directory_lookup(nd,nd->dents[i].d_name);
+                        Entry *e=directory_lookup(nd,nd->dents[i].name);
                         assert(e);
                         init_entry(e, dfd, e->name);
                         e->state=ENTRY_WAITING;
@@ -431,7 +438,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
 
         /* Initialize ((stat) all the entries which have not been stated, in readdir() order */
         for (int i = 0; i < nd->entries; i++) {
-                char *name=nd->dents[i].d_name;
+                char *name=nd->dents[i].name;
                 Entry *e=directory_lookup(nd, name);
                 assert(e);
                 if (!e->dir) init_entry(e, nd->fd, name);
