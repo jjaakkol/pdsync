@@ -465,71 +465,71 @@ void print_progress() {
 }
 
 int remove_hierarchy(Directory *parent, Entry *tentry) {
-    struct stat thisdir;
-    Directory *del=NULL;
-    int i;
-    int skip_rmdir=0;
-    int dfd=-1;
+        struct stat thisdir;
+        Directory *del=NULL;
+        int i;
  
-    del=pre_scan_directory(parent, tentry);
-    if (!del) {
-    write_error("remove directory", parent, "PATHMISSING");
-    return -1;
-    }
-    dfd=dir_getfd(del);
-    fstat(dfd,&thisdir);
-    if (thisdir.st_dev==source_stat.st_dev &&
-	thisdir.st_ino==source_stat.st_ino) {
-	/* This can happen when doing something like 
-	 * dsync /tmp/foo/bar /tmp/foo */
-	show_warning("Skipping removal of source directory","PATHMISSING");
-	goto fail;
-    }
-    if (thisdir.st_dev==target_stat.st_dev &&
-	thisdir.st_ino==target_stat.st_ino) {
-	/* This should only happen on badly screwed up filesystems */
-	show_warning("Skipping removal of target directory (broken filesystem?).\n","PATHMISSING");
-	goto fail;
-    }
+        del=pre_scan_directory(parent, tentry);
+        if (!del) {
+                write_error("scan removed directory", parent, tentry->name);
+                goto fail;
+        }
+        int dfd=dir_open(del);
+        if (dfd<0) goto fail;
+        fstat(dfd,&thisdir);
+        if (thisdir.st_dev==source_stat.st_dev &&
+        	thisdir.st_ino==source_stat.st_ino) {
+        	/* This can happen when doing something like 
+	        * dsync /tmp/foo/bar /tmp/foo */
+        	show_warning("Skipping removal of source directory", dir_path(parent));
+	        goto fail;
+        }
+        if (thisdir.st_dev==target_stat.st_dev &&
+	        thisdir.st_ino==target_stat.st_ino) {
+	        /* This should only happen on badly screwed up filesystems */
+	        show_warning("Skipping removal of target directory (broken filesystem?).\n", dir_path(parent));
+	        goto fail;
+        }
   
-    for(i=0;i<del->entries;i++) {
-    struct stat file;
-        set_thread_status(file_path(parent, del->array[i].name), "unlinking");
-    if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
-        write_error("fstatat", del, del->array[i].name);
-        goto fail;
-    }
-    if (S_ISDIR(file.st_mode)) {
-        int r;
-        r=remove_hierarchy(del, &del->array[i]);
-        if (r<0) goto fail;
-    } else {
-        if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
-        write_error("unlinkat", del, del->array[i].name);
-        /* FIXME: maybe continue here? */
-        goto fail;
-        } else {
+        for(i=0;i<del->entries;i++) {
+                struct stat file;
+                set_thread_status(file_path(parent, del->array[i].name), "unlinking");
+                if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
+                        write_error("fstatat", del, del->array[i].name);
+                        goto fail;
+                }
+                if (S_ISDIR(file.st_mode)) {
+                        if (remove_hierarchy(del, &del->array[i])<0) goto fail;
+                } else if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
+                        write_error("unlinkat", del, del->array[i].name);
+                        goto fail; 
+                }
                 item("RM",del,del->array[i].name);
 		opers.entries_removed++;
-	    }
 	}
-    }
 
+        item("RD", parent, tentry->name);
+        int pfd=-1;
+        if (!dryrun) {
+                pfd=dir_open(parent);
+                if (unlinkat(pfd, tentry->name, AT_REMOVEDIR )<0) {
+	                write_error("rmdir", parent, tentry->name);
+                        goto fail; 
+                }
+        }
+        opers.dirs_removed++;
+
+        int ret=0;
  cleanup:
-    if (del) d_freedir(del);
-    if (!skip_rmdir) item("RD", parent, tentry->name);
-    if (!dryrun && !skip_rmdir && unlinkat( dir_getfd(parent), tentry->name, AT_REMOVEDIR )<0) {
-	write_error("rmdir", parent, tentry->name);
-        return -1;
-    } else {
-	opers.dirs_removed++;
-    }
-    return 0;
+        if (dfd>=0) dir_close(del);
+        if (pfd>=0) dir_close(parent);
+        if (del) d_freedir(del);
+        return ret;
 
  fail:
-    skip_rmdir=1;
-    write_error("remove_hierarchy", del, tentry->name);
-    goto cleanup;
+        write_error("remove_hierarchy", del, tentry->name);
+        ret=-1;
+        goto cleanup;
 }    
 
 int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
@@ -549,12 +549,14 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         snprintf(buf,sizeof(buf)-1,"copy %ld", offset/copy_job_size);
         set_thread_status(file_path(to,target),buf);
 
-        fromfd=openat(dir_getfd(from),source,O_RDONLY|O_NOFOLLOW);
+        int from_dfd = dir_open(from);
+        fromfd=openat(from_dfd, source, O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
                 write_error("open", from, source); /* FIXME: this is not a write error*/
                 goto fail;
         }
-        tofd=openat(dir_getfd(to), target, O_WRONLY|O_CREAT|O_NOFOLLOW,0666);
+        int to_dfd = dir_open(to);
+        tofd=openat(to_dfd, target, O_WRONLY|O_CREAT|O_NOFOLLOW, 0666);
         if(tofd<0) {
                 write_error("open", to, target);
                 goto fail;
@@ -653,8 +655,10 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         end:
         snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
-        if (fromfd>=0) close(fromfd);    
+        if (fromfd>=0) close(fromfd);
+        if (from_dfd>=0) dir_close(from);
         if (tofd>=0) close(tofd);
+        if (to_dfd>=0) dir_close(to);
 
         set_thread_status(file_path(to,target),buf);
 
@@ -666,18 +670,20 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
 /* Remove one entry from a directory */
 int remove_entry(Directory *parent, Entry *tentry) {
+        int ret=0;
         const char *name=tentry->name;
         if (S_ISDIR(tentry->stat.st_mode)) {
                 remove_hierarchy(parent, tentry);
         } else {
                 item("RM",parent,name);
-                if (!dryrun && unlinkat(dir_getfd(parent), name, 0)) {
-                    write_error("unlink", parent, name);
-                    return -1;
-                }
-                opers.entries_removed++;
+                int dfd=dir_open(parent);
+                if (!dryrun && unlinkat(dfd, name, 0)) {
+                        write_error("unlink", parent, name);
+                        ret=-1;
+                } else opers.entries_removed++;
+                dir_close(parent);
         }
-    return 0;
+        return ret;
 }
 
 static int should_exclude(const Directory *from, const Entry *entry) {
@@ -880,12 +886,14 @@ void skip_entry(Directory *to, const Entry *fentry) {
 int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
         set_thread_status(file_path(to, target),"metadata");
-                        	
+
+        int dfd=dir_open(to);
+
         /* Lookup the existing inode bits */
         struct stat to_stat;      
         if (fstatat(to->fd, fentry->name, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
-                // If the target does not exists, we have complained about it before
-                fprintf(stderr, "fstatat failed for %s/%s: %s\n", dir_path(to), fentry->name, strerror(errno));
+                write_error("can't read metadata (fstatat)", to, fentry->name);
+                dir_close(to);
                 return -1;
         }
 
@@ -899,9 +907,9 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                 gid=fentry->stat.st_gid;
         }
         if (uid!=-1 || gid!=-1) {
-                if (!dryrun && fchownat(dir_getfd(to),fentry->name, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
-                        ret=errno;
+                if (!dryrun && fchownat(dfd, fentry->name, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
                         write_error("fchownat", to, fentry->name);
+                        ret=-1;
                 } else {
                         if (itemize>1) item("CO",to,fentry->name);
                         opers.chown++;
@@ -912,9 +920,9 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
         if (preserve_permissions && 
                 !S_ISLNK(fentry->stat.st_mode) &&
                 fentry->stat.st_mode!=to_stat.st_mode) {
-                if (!dryrun && fchmodat(dir_getfd(to), fentry->name, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
-                        ret=errno;
+                if (!dryrun && fchmodat(dfd, fentry->name, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
                         write_error("fchmodat", to, fentry->name);
+                        ret=-1;
                 } else {
                         if (itemize>2) item("CH",to,fentry->name);
                         opers.chmod++;
@@ -940,24 +948,25 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                         to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
                 ) {
                         /* skip, times were right */
-                } else if (!dryrun && utimensat(dir_getfd(to), fentry->name,tmp, AT_SYMLINK_NOFOLLOW)<0) {
-                        ret=errno;
+                } else if (!dryrun && utimensat(dfd, fentry->name,tmp, AT_SYMLINK_NOFOLLOW)<0) {
                         write_error("utimensat", to, fentry->name);
+                        ret=-1;
                 } else {
                         if (itemize) item("TI", to, fentry->name);
                         opers.times++;
                 }
         }
+        dir_close(to);
         return ret;
 }
 
 // Job callback to create one target inode, directory, file, FIFO, ... 
-int create_target(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
+int create_target(Directory *from, Entry *fentry, Directory *to, const char *target, off_t depth) {
         assert(from && fentry && to && target);
         const char *source=fentry->name;
         assert(source);
 
-        int tofd=dir_getfd(to);
+        int tofd=dir_open(to);
         if (tofd<0) {
                 write_error("Directory has gone away", to, target);
                 return -1;
@@ -968,7 +977,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        copy_regular(from, fentry, to, target, -1);
                 /* We have a target to set the inode bits. We submit a job to set its bits */
                 submit_job(from, fentry, to, fentry->name, DSYNC_FILE_WAIT, sync_metadata);
-                return 0;
+                goto out;
         }
         
         if (S_ISDIR(fentry->stat.st_mode)) {
@@ -979,23 +988,23 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                                 set_thread_status(file_path(to,target),"mkdir");
 	                        if (!dryrun && (mkdirat(tofd,target,0777)<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
                                         write_error("mkdir", to, target);
-                                        return -1;
+                                        goto fail;
 	                        }
 	                        opers.dirs_created++;
                         }
                 } else if (!dryrun && !S_ISDIR(target_stat.st_mode) ) {
                         errno=ENOTDIR;
                         write_error("Existing target is not a directory", to, target);
-                        return -1;
+                        goto fail;
 	        }
 	        if (safe_mode) {
 		        if (preserve_owner && fchown(tofd,0,0)<0) {
                                 write_error("fchown", to, target);
-                                return -1;
+                                goto fail;
                         }
 		        if (fchmod(tofd,0700)<0) {
                                 write_error("chmod", to, target);
-                                return -1;
+                                goto fail;
 		        }
 	        }
         	if (one_file_system && from->parent && fentry->stat.st_dev!=from->parent->stat.st_dev) {
@@ -1011,49 +1020,54 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
-                        submit_job(from, fentry, to, target, 0, dsync);
+                        submit_job(from, fentry, to, target, depth+1, dsync);
                         /* We have a target to set the inode bits. We submit a job to set its bits */
                         submit_job(from, fentry, to, target, DSYNC_DIR_WAIT, sync_metadata);
-                        return 0;
+                        goto out;
 	        }
     
         } else if (S_ISLNK(fentry->stat.st_mode)) {
-        	if (!preserve_links) return 0;
+        	if (!preserve_links) goto out;
 	        item("SL",to,target);
 	        if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
                         write_error("symlink", to, target);
-                        return -1;
+                        goto fail;
                 } else {
 	                opers.symlinks_created++;
 	        }
 
         } else if (S_ISSOCK(fentry->stat.st_mode)) {
                 show_error_dir("Ignoring socket", from,fentry->name);
-                return 0;
+                goto out;
 
         } else if (S_ISFIFO(fentry->stat.st_mode)) {
 	        if (!preserve_devices) return 0;
 	        item("FI",to,target);
 	        if (!dryrun && mkfifoat(tofd,target,0777)<0) {
                         write_error("mkfifo", to, target);
-                        return -1;
+                        goto fail;
 	        }
 
         // Don't bother with device special files 
         } else if (S_ISCHR(fentry->stat.st_mode)) {
                 show_error_dir("Ignoring character device", from, fentry->name);
-                return 0;
+                goto out;
 
         } else {
 	        show_error_dir("Unknown file type ignored in dir", from, fentry->name);
-                return -1;
+                goto out;
         }
 
         /* If we did not start a Job, we can just update the metadata now, */
-        sync_metadata(from, fentry, to, fentry->name, offset);
+        sync_metadata(from, fentry, to, fentry->name, depth);
 
-
-        return 0;
+        int ret=0;
+        out: 
+        dir_close(to);
+        return ret;
+        fail:
+        ret=1;
+        goto out;
 }
 
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {

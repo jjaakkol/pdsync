@@ -44,7 +44,6 @@ typedef struct {
         struct JobStruct *job;         /* If this entry has a job associated to it */
         struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
         struct DirectoryStruct *dir;
-        // pthread_mutex_t mut;
 } Entry;
 
 /* We keep the fd of all directories around until the directories are processed to be able to use 
@@ -52,6 +51,7 @@ typedef struct {
 typedef struct DirectoryStruct {
         int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
         int fd;
+        int fdrefs; // Count references to fd so that we can cache fds
         struct stat stat;
         struct DirectoryStruct *parent;
         Entry *parent_entry;
@@ -61,6 +61,7 @@ typedef struct DirectoryStruct {
         int refs;
         struct dirent *dents;
         Entry *array;
+        pthread_mutex_t mut;
 } Directory;
 
 typedef struct {
@@ -90,8 +91,14 @@ typedef struct {
 } Scans;
 extern Scans scans;
 typedef struct JobStruct Job;
+typedef enum {
+        JOB_DONE=1,
+        JOB_NONE=0,
+        JOB_FAILED=-1,
+        JOB_BLOCKED=-2
+} JobResult;
 
-typedef int (JobCallback) (
+typedef JobResult (JobCallback) (
                 Directory *from,
 		Entry *from_entry, 
 		Directory *to,
@@ -155,10 +162,11 @@ int wait_for_entry(Entry *job);
 const char *dir_path(const Directory *d);
 const char *file_path(const Directory *d, const char *f);
 void show_error_dir(const char *message, const Directory *parent, const char *file);
-int run_any_job();
+JobResult run_any_job();
 int print_jobs(FILE *f);
 void set_thread_status(const char *file, const char *status);
 void mark_job_start(const char *file, const char *s);
 void print_progress();
-int dir_openat(Directory *parent, const char *name);
-int dir_getfd(Directory *d);
+int dir_open(Directory *d);
+int dir_close(Directory *d);
+int dir_openat(Directory *d, const char *f);

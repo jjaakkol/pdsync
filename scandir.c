@@ -27,6 +27,7 @@ typedef struct JobStruct
         off_t offset;
 } Job;
 
+
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 Job *pre_scan_list = NULL;
@@ -73,7 +74,7 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 }
 
 /* gets a file handle to Directory, possibly reopening it */
-int dir_getfd_unlocked(Directory *d)
+int dir_open_unlocked(Directory *d)
 {
         if (d->fd < 0)
         {
@@ -84,21 +85,34 @@ int dir_getfd_unlocked(Directory *d)
                     s.st_dev != d->stat.st_dev)
                 {
                         show_error_dir("Directory changed or unavailable", d, d->name);
-                        if (fd >= 0) close(fd);
-                        fd=-1;
                 }
                 d->fd = fd;
         }
+        d->fdrefs++;
         return d->fd;
 }
 
+int dir_close_unlocked(Directory *d) {
+        d->fdrefs--;
+        assert(d->refs>=0);
+        if (d->fdrefs==0) {
+                assert(d->fd>=0);
+                if (close(d->fd)<0) {
+                        show_error("Directory close failed?! Exiting now with status 2", dir_path(d));
+                        exit(2);
+                }
+                d->fd=-1;
+        }
+        return 0;
+}
+
 /* Opens a file or directory, hopefully safely  */
-int dir_openat(Directory *parent, const char *name)
+int dir_openat_unlocked(Directory *parent, const char *name)
 {
-        int pfd = (parent) ? dir_getfd_unlocked(parent) : AT_FDCWD;
+        int pfd = (parent) ? dir_open_unlocked(parent) : AT_FDCWD;
         int dfd = openat(pfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NOATIME);
         if (dfd < 0 && errno == EPERM)
-                dfd = openat(pfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+                dfd = openat(pfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW); // Try again without O_NOATIME
         if (dfd < 0) {
                 if (errno==EMFILE) {
                         show_error_dir("dir_openat probably a fd leak BUG", parent, name);
@@ -106,16 +120,33 @@ int dir_openat(Directory *parent, const char *name)
                 }
                 show_error_dir("dir_openat", parent, name);
         }
+        if (pfd>=0) dir_close_unlocked(parent);
         return dfd;
 }
 
-int dir_getfd(Directory *d)
+int dir_open(Directory *d)
 {
-        pthread_mutex_lock(&mut); // TODO: this mutex should be in Directory, not global
-        d->fd = dir_getfd_unlocked(d);
-        pthread_mutex_unlock(&mut);
-        return d->fd;
+        pthread_mutex_lock(&d->mut);
+        int fd = dir_open_unlocked(d);
+        pthread_mutex_unlock(&d->mut);
+        return fd;
 }
+
+int dir_close(Directory *d) {
+        pthread_mutex_lock(&d->mut); 
+        dir_close_unlocked(d);
+        pthread_mutex_unlock(&d->mut);
+        return 0;
+}
+
+int dir_openat(Directory *parent, const char *name) {
+        if (!parent) return dir_openat_unlocked(NULL, name); // FIXME: directory root does not have a parent o lock. Maybe it should. 
+        pthread_mutex_lock(&parent->mut);
+        int dfd=dir_openat_unlocked(parent, name);
+        pthread_mutex_unlock(&parent->mut);
+        return dfd;
+}
+
 
 /* Free a directory structure, including its finished jobs */
 void d_freedir_locked(Directory *dir)
@@ -264,26 +295,31 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         struct stat tmp_stat;
         int entries = 0;
         Directory *nd=NULL;
+        int ret=JOB_DONE; 
 
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
 
+        set_thread_status(file_path(parent,name),"read_directory");
+
         pthread_mutex_lock(&mut);
         if (parent_entry->dir) {
                 // Another thread beat us. Run a job if not ready yet. 
-                while(parent_entry->state!=ENTRY_READY) run_any_job();
-                nd=parent_entry->dir; 
+                if (parent_entry->state!=ENTRY_READY) {
+                        ret=JOB_BLOCKED;
+                }
+                else nd=parent_entry->dir; 
                 goto out;
         }
         nd = my_calloc(1, sizeof(Directory));
         parent_entry->dir=nd; // will be filled when we finish
         pthread_mutex_unlock(&mut);
 
-        //set_thread_status(file_path(parent, name), "readdir");
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL || fstat(dfd, &tmp_stat) < 0)
         {
                 show_error_dir("read_directory", parent, name);
                 if (dfd >= 0) close(dfd);
+                ret=JOB_FAILED;
                 goto out;
         }
 
@@ -329,6 +365,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         nd->fd = -1;
         nd->array = my_calloc(entries, sizeof(Entry));
         nd->entries=entries;
+        pthread_mutex_init(&nd->mut, 0);
 
         for (int i = 0; i < entries; i++) {
                 nd->array[i].name=my_strdup(nd->dents[i].d_name);
@@ -365,8 +402,9 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
 
         out: 
+        pthread_cond_broadcast(&cond);
         pthread_mutex_unlock(&mut);
-        return 0;
+        return ret;
 }
 
 /* scan_directory can be called from multiple threads */
@@ -376,11 +414,17 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         assert(!parent || parent->magick == 0xDADDAD);
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
-        read_directory(parent, entry, NULL, entry->name, 0);
+        while(read_directory(parent, entry, NULL, entry->name, 0)==JOB_BLOCKED) {
+                pthread_mutex_lock(&mut);
+                run_any_job();
+                pthread_mutex_unlock(&mut);      
+        }
 
         Directory *nd=entry->dir;
         assert(nd); // FIXME: can be NULL on directory read failure
-        if (dir_getfd(nd) < 0) {
+        set_thread_status(file_path(parent, entry->name), "scandir");
+
+        if (dir_open(nd) < 0) {
                 d_freedir(nd);
                 return NULL;
         }
@@ -388,14 +432,13 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         /* Initialize ((stat) all the entries which have not been stated, in readdir() order */
         for (int i = 0; i < nd->entries; i++) {
                 char *name=nd->dents[i].d_name;
-                mark_job_start(file_path(nd, name), "fstatat");
                 Entry *e=directory_lookup(nd, name);
                 assert(e);
                 if (!e->dir) init_entry(e, nd->fd, name);
         }
 
         set_thread_status(file_path(parent, entry->name), "scandir done");
-
+        dir_close(nd);
         return nd;
 }
 
@@ -449,22 +492,21 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                 pthread_cond_broadcast(&cond); /* wake up anyone who was waiting for this */
         } else scans.pre_scan_misses++; // No prescan job was running. 
 
-        /* Reopen the fd of prescanned directories.  */
-        if (result) {
-                assert(result->parent && result->parent->magick == 0xDADDAD);
-                dir_getfd_unlocked(result);
-                if (result->fd < 0) {
-                        d_freedir(result);
-                        goto out;
-                }
-        }
-        else
-        {
+        if (!result) {
                 set_thread_status(file_path(parent, dir->name), "scanning dir");
                 /* The directory was not in queue or was not started. Scan it in this thread */
                 pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
                 result = scan_directory(parent, dir);
                 pthread_mutex_lock(&mut);
+        }
+        if (!result) {
+                show_error_dir("Failed to scan a directory", parent, dir->name);
+                goto out;
+        }
+        dir_open(result);
+        if (result->fd<0) {
+                d_freedir(result);
+                goto out; 
         }
 
         if (result == NULL)
@@ -479,7 +521,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
         scans.entries_active += result->entries;
 
         /* Now add the newly found directories to the job queue for pre scan */
-        for (i = result->entries - 1; 0 && i >= 0; i--)
+        for (i = result->entries - 1; i >= 0; i--)
         {
                 if (S_ISDIR(result->array[i].stat.st_mode))
                 {
@@ -507,6 +549,8 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                                 scans.maxjobs = scans.queued;
                 }
         }
+        dir_close(result);
+        result->fd=-1;
 
 out:
         pthread_cond_broadcast(&cond);
@@ -518,7 +562,7 @@ out:
 /* Runs one job: can be called by a thread when waiting jobs to finish.
  * Assumes mutex is held.
  */
-int run_one_job(Job *j)
+JobResult run_one_job(Job *j)
 {
         assert(j && j->magick == 0x10b10b);
 
@@ -534,7 +578,6 @@ int run_one_job(Job *j)
                 /* Don't keep prescanned directories open to conserve filedescriptos */
                 if (j->result && j->result->fd >= 0)
                 {
-                        printf("Closing fd\n");
                         close(j->result->fd);
                         j->result->fd = -1;
                 }
@@ -543,7 +586,7 @@ int run_one_job(Job *j)
                 j->state = SCAN_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
-                return 1;
+                return JOB_DONE;
 
         case JOB_WAITING:
                 assert(j->magick == 0x10b10b);
@@ -554,6 +597,10 @@ int run_one_job(Job *j)
                 pthread_mutex_unlock(&mut);
                 j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                 pthread_mutex_lock(&mut);
+                if (j->ret == JOB_BLOCKED) {
+                        j->state = JOB_WAITING; 
+                        return JOB_BLOCKED; 
+                }
                 j->state = JOB_READY;
                 scans.queued--;
                 Job *wj = j->fentry->wait_queue;
@@ -582,12 +629,12 @@ int run_one_job(Job *j)
                         // printf("jobs left %d/%d in %s\n",jobs_left,scans.queued, file_path(wj->from, wj->fentry->name));
                 }
                 pthread_cond_broadcast(&cond);
-                return 1;
+                return JOB_DONE;
 
         default:
-                return 0;
+                return JOB_NONE;
         }
-        return 0;
+        return JOB_NONE;
 }
 
 /* This is called:
@@ -596,28 +643,32 @@ int run_one_job(Job *j)
  * This is called with the lock held.
  * This is where we would apply a scheduling policy, if there was one.
  */
-int run_any_job()
+JobResult run_any_job()
 {
         Job *j;
-        // Run prescan jobs first, since someone is likely waiting for them
-        for (j = pre_scan_list; j && (j->state != SCAN_WAITING); j = j->next)
-                ;
-        if (j && run_one_job(j))
-                return 1; /* one SCAN job was run, return */
+        for (j = pre_scan_list; j; j = j->next)
+        {
+                // run read_directory and scan_directory jobs first to avoid deadlocks
+                if (j->state == SCAN_WAITING ||
+                        (j->state==JOB_WAITING && j->callback==read_directory) )
+                        break;
+        }
+        if (j && run_one_job(j)==JOB_DONE)
+                return JOB_DONE; /* one job was run, return */
         for (j = pre_scan_list; j; j = j->next)
         {
                 if (j->state == JOB_WAITING)
                         break; /* run the job */
         }
-        if (j && run_one_job(j))
-                return 1; /* one job was run, return */
+        if (j && run_one_job(j)==JOB_DONE)
+                return JOB_DONE; /* one job was run, return */
 
         /* No jobs to run, we wait */
         mark_job_start(NULL, "idle");
         scans.idle_threads++;
         pthread_cond_wait(&cond, &mut);
         scans.idle_threads--;
-        return 0;
+        return JOB_NONE;
 }
 
 Entry *directory_lookup(const Directory *d, const char *name) {
@@ -814,7 +865,8 @@ int print_jobs(FILE *f)
         i = 0;
         while (j)
         {
-                fprintf(f, "Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n", i++, dir_path(j->from), j->fentry->name, dir_path(j->to), (j->target) ? j->target : "[NOTARGET]", j->state, j->offset, j->fentry);
+                fprintf(f, "Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n", i++, dir_path(j->from), j->fentry->name, 
+                        (j->to) ? dir_path(j->to) :"NULL", (j->target) ? j->target : "[NOTARGET]", j->state, j->offset, j->fentry);
                 j = j->next;
         }
         return 0;
@@ -850,7 +902,7 @@ void start_job_threads(int job_threads, Job *job)
                         print_progress();
                         last_ns = now;
                 }
-                ts.tv_sec += +1;
+                ts.tv_sec=1;
                 if (pthread_cond_timedwait(&cond, &mut, &ts) < 0 && errno == ETIMEDOUT)
                 {
                         fprintf(stderr, "No IO in 1s. Slow fs or deadlock?\n");
