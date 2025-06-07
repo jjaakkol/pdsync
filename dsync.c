@@ -447,12 +447,13 @@ void print_progress() {
         }
         long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d files |%7.1ff/s |%9s |%9s/s |%5d queued |%3d idle |\n",
+        fprintf(tty_stream,"%d files |%7.1ff/s |%9s |%9s/s |%5d queue|%5d wait |%3d idle |\n",
                 scans.entries_scanned,
                 1000000000.0 * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
                 scans.queued,
+                scans.wait_queued,
                 scans.idle_threads
         );
         if (progress>=2) print_opers(tty_stream,&opers);
@@ -888,13 +889,16 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
         set_thread_status(file_path(to, target),"metadata");
 
         int dfd=dir_open(to);
+        if (dfd==-1) {
+                write_error("open target parent", to, target);
+                return -1;
+        }
 
         /* Lookup the existing inode bits */
-        struct stat to_stat;      
-        if (fstatat(to->fd, fentry->name, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
-                write_error("can't read metadata (fstatat)", to, fentry->name);
-                dir_close(to);
-                return -1;
+        struct stat to_stat;
+        if (fstatat(dfd, fentry->name, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
+                write_error("sync_metadata can't stat target (fstatat)", to, fentry->name);
+                goto fail;
         }
 
         /* Check if we need to update UID and GID */
@@ -948,7 +952,7 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                         to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
                 ) {
                         /* skip, times were right */
-                } else if (!dryrun && utimensat(dfd, fentry->name,tmp, AT_SYMLINK_NOFOLLOW)<0) {
+                } else if (!dryrun && utimensat(dfd, fentry->name, tmp, AT_SYMLINK_NOFOLLOW)<0) {
                         write_error("utimensat", to, fentry->name);
                         ret=-1;
                 } else {
@@ -956,6 +960,7 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                         opers.times++;
                 }
         }
+        fail:
         dir_close(to);
         return ret;
 }
@@ -1020,9 +1025,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
-                        submit_job(from, fentry, to, target, depth+1, dsync);
-                        /* We have a target to set the inode bits. We submit a job to set its bits */
-                        submit_job(from, fentry, to, target, DSYNC_DIR_WAIT, sync_metadata);
+                        submit_job(from, fentry, to, target, DSYNC_DIR_WAIT, dsync);
                         goto out;
 	        }
     
@@ -1166,6 +1169,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 	    }
 
             /* Create the target in a different Job */
+            /* FIXME: this might actually be slower, since the threads are competing for directory lock */
             submit_job(from, fentry, to, fentry->name, i, create_target);
 
 	    /* Save paths to entries having link count > 1 
@@ -1178,6 +1182,10 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 	}
 
     }
+
+        /* Job to set the direcoty metadata bits needs to wait for all create jobs to have finished */
+        submit_job(from_parent, parent_fentry, to_parent, parent_fentry->name, DSYNC_DIR_WAIT, sync_metadata);
+
     
     ret=0;
     int failed_jobs=0;

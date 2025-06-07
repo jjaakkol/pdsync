@@ -79,8 +79,9 @@ typedef struct {
     int pre_scan_used;
 
     int jobs;
-    int queued;
     int maxjobs;
+    int queued;
+    int wait_queued;
 
     int dirs_active;
     int entries_active;
@@ -162,6 +163,7 @@ int wait_for_entry(Entry *job);
 const char *dir_path(const Directory *d);
 const char *file_path(const Directory *d, const char *f);
 void show_error_dir(const char *message, const Directory *parent, const char *file);
+JobResult run_one_job(Job *j);
 JobResult run_any_job();
 int print_jobs(FILE *f);
 void set_thread_status(const char *file, const char *status);

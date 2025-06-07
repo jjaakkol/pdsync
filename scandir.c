@@ -125,12 +125,13 @@ int dir_openat_unlocked(Directory *parent, const char *name)
                 }
                 show_error_dir("dir_openat", parent, name);
         }
-        if (pfd>=0) dir_close_unlocked(parent);
+        if (parent && pfd>=0) dir_close_unlocked(parent);
         return dfd;
 }
 
 int dir_open(Directory *d)
 {
+        if (d==NULL) return AT_FDCWD; // hack
         pthread_mutex_lock(&d->mut);
         int fd = dir_open_unlocked(d);
         pthread_mutex_unlock(&d->mut);
@@ -138,6 +139,7 @@ int dir_open(Directory *d)
 }
 
 int dir_close(Directory *d) {
+        if (d==NULL) return 0;
         pthread_mutex_lock(&d->mut); 
         dir_close_unlocked(d);
         pthread_mutex_unlock(&d->mut);
@@ -172,8 +174,10 @@ void d_freedir_locked(Directory *dir)
                 dir->entries--;
                 Entry *e = &dir->array[dir->entries];
                 assert(!e->job); // no job should be running on this entry
+                assert(!e->wait_queue);
                 if (e->link)
                         free(e->link);
+                free(e->name);
         }
         free(dir->array);
         free(dir->dents);
@@ -309,7 +313,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
 
         pthread_mutex_lock(&mut);
         if (parent_entry->dir) {
-                // Another thread beat us. Run a job if not ready yet. 
+                // Another thread beat us to the Job. Return the result or block
                 if (parent_entry->state!=ENTRY_READY) {
                         ret=JOB_BLOCKED;
                 }
@@ -472,10 +476,9 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                 /* We have a prescan job */
                 switch (d->state) {
                 case SCAN_WAITING:
-                        /* The job for this directory has not started yet. We run it in this thread later */
-                        scans.queued--;
+                        /* The job for this directory has not started yet. Run it ourselves */
                         scans.pre_scan_misses++;
-                        d->state = SCAN_READY;
+                        run_one_job(d);
                         break;
                 case SCAN_RUNNING:
                         /* Scan had already started. Wait for the scanning thread to finish */
@@ -501,7 +504,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
 
         if (!result) {
                 set_thread_status(file_path(parent, dir->name), "scanning dir");
-                /* The directory was not in queue or was not started. Scan it in this thread */
+                /* The directory was not in queue. Scan it in this thread */
                 pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
                 result = scan_directory(parent, dir);
                 pthread_mutex_lock(&mut);
@@ -566,39 +569,71 @@ out:
         return result;
 }
 
+// Checks if the WaitQueue job should be run and add it to the global queue if yes
+int job_check_wait_queue(Job *wj)
+{
+        Job *i;
+        if (wj==NULL) return JOB_NONE;
+        // Find if there are any jobs to be waited left
+        for (i = pre_scan_list; i; i = i->next)
+        {
+                if (wj->offset == DSYNC_FILE_WAIT && i->fentry == wj->fentry && i->state!=SCAN_READY && i->state!=JOB_READY)
+                        break;
+                if (wj->offset == DSYNC_DIR_WAIT && i->from && i->from->parent_entry==wj->fentry && i->state!=SCAN_READY && i->state!=JOB_READY)
+                        break;
+        }
+        if (i == NULL)
+        {
+                // Schedule the job that was waiting
+                //printf("wait queue job %s (%p) scheduled \n", file_path(wj->from, wj->fentry->name), wj);
+                wj->next = pre_scan_list;
+                pre_scan_list = wj;
+                wj->fentry->wait_queue = NULL;
+                scans.wait_queued--;
+                scans.queued++;
+                return JOB_WAITING;
+        } else {
+#if 0
+                 printf("wait queue %ld job %s (%p) waiting for %s (%p) state=%d\n", wj->offset,
+                        file_path(wj->from, wj->fentry->name), wj,  
+                        file_path(i->from, i->fentry->name), i->fentry, i->state);
+#endif
+                return JOB_BLOCKED;
+        }
+}
+
+
 /* Runs one job: can be called by a thread when waiting jobs to finish.
  * Assumes mutex is held.
  */
 JobResult run_one_job(Job *j)
 {
         assert(j && j->magick == 0x10b10b);
-
+        Entry *fentry=j->fentry;
+        Entry *parent_entry=(j->from) ? j->from->parent_entry : NULL;
+        
         switch (j->state)
         {
-
         case SCAN_WAITING:
                 j->state = SCAN_RUNNING;
                 j->tid = pthread_self();
                 mark_job_start(file_path(j->from, j->fentry->name), "readdir start");
                 pthread_mutex_unlock(&mut);
                 j->result = scan_directory(j->from, j->fentry);
-                /* Don't keep prescanned directories open to conserve filedescriptos */
-                if (j->result && j->result->fd >= 0)
-                {
-                        close(j->result->fd);
-                        j->result->fd = -1;
-                }
                 pthread_mutex_lock(&mut);
                 set_thread_status(file_path(j->from, j->fentry->name), "scanned dir");
                 j->state = SCAN_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
+                if (fentry) job_check_wait_queue(fentry->wait_queue);
+                if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
                 return JOB_DONE;
+                break;
 
         case JOB_WAITING:
                 assert(j->magick == 0x10b10b);
-                j->state = JOB_RUNNING;
                 assert(j->fentry);
+                j->state = JOB_RUNNING;
                 j->tid = pthread_self();
                 mark_job_start(file_path(j->from, j->fentry->name), "job start");
                 pthread_mutex_unlock(&mut);
@@ -610,38 +645,16 @@ JobResult run_one_job(Job *j)
                 }
                 j->state = JOB_READY;
                 scans.queued--;
-                Job *wj = j->fentry->wait_queue;
-                if (wj == NULL && j->from)  wj = j->from->parent_entry->wait_queue;
-                free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
-                if (wj)
-                {
-                        // Schedule the wait queue job, if there was one */
-                        assert(wj->offset == DSYNC_FILE_WAIT || wj->offset == DSYNC_DIR_WAIT);
-                        Job *i;
-                        // Find if there are any jobs to be waited left
-                        for (i = pre_scan_list; i; i = i->next)
-                        {
-                                if (i->fentry == wj->fentry)
-                                        break;
-                                if (wj->offset == DSYNC_DIR_WAIT && i->from && i->from->parent_entry == wj->fentry)
-                                        break;
-                        }
-                        if (i == NULL)
-                        {
-                                // Schedule the job that was waiting
-                                wj->next = pre_scan_list;
-                                pre_scan_list = wj;
-                                wj->fentry->wait_queue = NULL;
-                        }
-                        // printf("jobs left %d/%d in %s\n",jobs_left,scans.queued, file_path(wj->from, wj->fentry->name));
-                }
                 pthread_cond_broadcast(&cond);
+                if (fentry) job_check_wait_queue(fentry->wait_queue);
+                if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
+                free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 return JOB_DONE;
 
         default:
                 return JOB_NONE;
         }
-        return JOB_NONE;
+        // Never here
 }
 
 /* This is called:
@@ -653,6 +666,7 @@ JobResult run_one_job(Job *j)
 JobResult run_any_job()
 {
         Job *j;
+#if 0
         for (j = pre_scan_list; j; j = j->next)
         {
                 // run read_directory and scan_directory jobs first to avoid deadlocks
@@ -662,8 +676,11 @@ JobResult run_any_job()
         }
         if (j && run_one_job(j)==JOB_DONE)
                 return JOB_DONE; /* one job was run, return */
+#endif
         for (j = pre_scan_list; j; j = j->next)
         {
+                if (j->state == SCAN_WAITING)
+                        break;
                 if (j->state == JOB_WAITING)
                         break; /* run the job */
         }
@@ -771,6 +788,10 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
         {
                 assert(job->fentry->wait_queue == NULL);
                 job->fentry->wait_queue = job; // Put it to wait queue
+                scans.wait_queued++;
+                //printf("wait queue job %p for %p submitted. queued=%5d\n", job, job->fentry, scans.wait_queued);
+                job_check_wait_queue(job); // Check and schedule it normally, if it can be run immediately.
+                return job; 
         }
         else if (fentry->job)
         {
@@ -783,7 +804,7 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
         }
         else
         {
-                /* Put it first to global queue, if there was not a fentry queue, to run jobs depth first */
+                /* If there was not a fentry queue, put it to global queue, to run jobs depth first */
                 job->next = pre_scan_list;
                 pre_scan_list = job;
                 fentry->job = job;
@@ -807,6 +828,8 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
 }
 
 
+#if 0
+// This needs to go way probably */
 /* wait for all jobs in the Entry to be done  */
 int wait_for_entry(Entry *e)
 {
@@ -847,6 +870,7 @@ int wait_for_entry(Entry *e)
         pthread_mutex_unlock(&mut);
         return ret;
 }
+#endif
 
 /* Debugging. Assume mutex is held */
 int print_jobs(FILE *f)
@@ -909,11 +933,13 @@ void start_job_threads(int job_threads, Job *job)
                         print_progress();
                         last_ns = now;
                 }
-                ts.tv_sec=1;
-                if (pthread_cond_timedwait(&cond, &mut, &ts) < 0 && errno == ETIMEDOUT)
+                ts.tv_sec+=1;
+                if (pthread_cond_timedwait(&cond, &mut, &ts)==ETIMEDOUT)
                 {
-                        fprintf(stderr, "No IO in 1s. Slow fs or deadlock?\n");
+                        fprintf(stderr, "No jobs finished in 1s. Slow fs or deadlock?\n");
                 }
         }
+        assert(scans.wait_queued==0);
         pthread_mutex_unlock(&mut);
+        //assert(pre_scan_list==NULL);
 }
