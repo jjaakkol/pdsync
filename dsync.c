@@ -59,6 +59,7 @@ Exclude **last_excluded=&exclude_list;
 // TODO static source and target paths should probly be removed
 static char s_topath[MAXLEN];
 static char s_frompath[MAXLEN];
+Entry source_root;
 static struct stat target_stat;
 static struct stat source_stat;
 
@@ -428,7 +429,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
 
 /* Print the progress to ttysream, obeying privacy options. Called from a thread once a second, with mutex locked */
 void print_progress() {
-        static int last_scanned=0;
+        static int last_synced=0;
         static long long last_bytes;
         static long long last_ns=0;
 
@@ -446,10 +447,13 @@ void print_progress() {
                 fprintf(tty_stream,"\033[2J\033[H### Pdsync syncing '%s' -> '%s'\n", s_frompath, s_topath);
         }
         long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
+        int files_synced=atomic_load(&scans.files_synced);
+        int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d files |%7.1ff/s |%9s |%9s/s |%5d queue|%5d wait |%3d idle |\n",
-                scans.entries_scanned,
-                1000000000.0 * (scans.entries_scanned-last_scanned) / (now_ns-last_ns),
+        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s |%5d queue|%5d wait |%3d idle |\n",
+                files_synced,
+                files_total, 
+                1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
                 scans.queued,
@@ -460,7 +464,7 @@ void print_progress() {
         if (progress>=3) print_scans(&scans);
         if (progress>=4) print_jobs(tty_stream);
  
-        last_scanned=scans.entries_scanned;
+        last_synced=files_synced;
         last_bytes=opers.bytes_copied;
         last_ns=now_ns;
 }
@@ -684,6 +688,7 @@ int remove_entry(Directory *parent, Entry *tentry) {
                 } else opers.entries_removed++;
                 dir_close(parent);
         }
+        tentry->state=ENTRY_DELETED; // FIXME: this needs a lock
         return ret;
 }
 
@@ -887,6 +892,9 @@ void skip_entry(Directory *to, const Entry *fentry) {
 int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
         set_thread_status(file_path(to, target),"metadata");
+
+        // Since this is called last for any file or directory, we count here that the file is done
+        atomic_fetch_add(&scans.files_synced,1);
 
         int dfd=dir_open(to);
         if (dfd==-1) {
@@ -1094,12 +1102,13 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 	goto fail;
     }
 
-    /* We always have a parent_fentry, since that is where we are copying files from,
-     * but the inode we are copying to might not exist. Create a dummy Entry for it. */
+    // We always have a parent_fentry, since that is where we are copying files from,
+    // but the directory we are copying to might be just created.
+    // FIXME this is a memory leak 
     Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
     if (parent_tentry==NULL) {
         parent_tentry=my_calloc(1,sizeof(Entry));
-        parent_tentry->name=my_strdup(target);
+        parent_tentry->name=my_strdup(target); 
     }
     to=pre_scan_directory(to_parent, parent_tentry);
 
@@ -1146,6 +1155,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 		    }
 		}
 	    } else {
+                atomic_fetch_add(&scans.files_synced,1);
 		if (itemize>=2) item("OK",to,todir);
 		continue;
 	    }
@@ -1263,9 +1273,8 @@ int main(int argc, char *argv[]) {
         fstat(sfd,&source_stat);
         fstat(tfd,&target_stat);
 
-        Entry from_entry;
-        init_entry(&from_entry, sfd, s_frompath);
-        Job *job=submit_job(NULL, &from_entry, NULL, s_topath, 0, dsync);
+        init_entry(&source_root, sfd, s_frompath);
+        Job *job=submit_job(NULL, &source_root, NULL, s_topath, 0, dsync);
 
         // start the threads, job queue and wait the submitted job to finish
         start_job_threads(threads, job);

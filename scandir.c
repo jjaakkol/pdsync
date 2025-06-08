@@ -43,6 +43,7 @@ const char *dir_path(const Directory *d)
         _Thread_local static int len;
         if (d)
         {
+                assert(d->magick==0xDADDAD);
                 dir_path(d->parent);
                 if (privacy && d->parent && d->parent->parent_entry &&
                     d->parent->parent_entry->stat.st_uid != 0 && d->stat.st_uid != getuid())
@@ -114,6 +115,7 @@ int dir_close_unlocked(Directory *d) {
 /* Opens a file or directory, hopefully safely  */
 int dir_openat_unlocked(Directory *parent, const char *name)
 {
+        assert(!parent || parent->magick==0xDADDAD);
         int pfd = (parent) ? dir_open_unlocked(parent) : AT_FDCWD;
         int dfd = openat(pfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NOATIME);
         if (dfd < 0 && errno == EPERM)
@@ -124,6 +126,7 @@ int dir_openat_unlocked(Directory *parent, const char *name)
                         abort();
                 }
                 show_error_dir("dir_openat", parent, name);
+                abort();
         }
         if (parent && pfd>=0) dir_close_unlocked(parent);
         return dfd;
@@ -159,12 +162,16 @@ int dir_openat(Directory *parent, const char *name) {
 void d_freedir_locked(Directory *dir)
 {
         assert(dir->magick == 0xDADDAD);
+        assert(dir->refs>=0);
+        assert(dir->parent_entry && dir->parent_entry->dir==dir);
 
         dir->refs--;
         if (dir->refs > 0)
         {
                 return;
         }
+        assert(dir->fdrefs==0);
+
         scans.dirs_active--;
         scans.entries_active -= dir->entries;
         scans.dirs_freed++;
@@ -188,6 +195,7 @@ void d_freedir_locked(Directory *dir)
 
         free(dir->name);
         dir->entries = -123; /* Magic value to debug a race */
+        dir->parent_entry->dir=NULL;
         if (dir->parent)
                 d_freedir_locked(dir->parent);
         free(dir);
@@ -303,7 +311,6 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         DIR *d = NULL;
         struct stat tmp_stat;
         int entries = 0;
-        Directory *nd=NULL;
         int ret=JOB_DONE; 
 
         assert(!parent || parent->magick != 0xDADDEAD);
@@ -312,16 +319,22 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         set_thread_status(file_path(parent,name),"read_directory");
 
         pthread_mutex_lock(&mut);
-        if (parent_entry->dir) {
-                // Another thread beat us to the Job. Return the result or block
-                if (parent_entry->state!=ENTRY_READY) {
-                        ret=JOB_BLOCKED;
-                }
-                else nd=parent_entry->dir; 
-                goto out;
+        switch (parent_entry->state) {
+                case ENTRY_CREATED:  // FIXME dsync() does not init parent_entry. It probably should
+                case ENTRY_INIT: break;
+                case ENTRY_READ_QUEUE: break;
+                case ENTRY_READING: ret=JOB_BLOCKED; goto out; 
+                case ENTRY_READ_READY: 
+                case ENTRY_SCAN_QUEUE:
+                case ENTRY_SCAN_RUNNING:
+                case ENTRY_SCAN_READY: goto out; // Already done 
+                case ENTRY_DELETED: goto out;    // Deleted already
         }
-        nd = my_calloc(1, sizeof(Directory));
+
+        // We won the race and get to read the directory
+        Directory *nd=my_calloc(1, sizeof(Directory));
         parent_entry->dir=nd; // will be filled when we finish
+        parent_entry->state=ENTRY_READING;
         pthread_mutex_unlock(&mut);
 
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL || fstat(dfd, &tmp_stat) < 0)
@@ -363,6 +376,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         }
 
         /* Obtain a lock to stop our own children from messing with us before we are ready */
+        /* FIXME make critical section shorter */
         pthread_mutex_lock(&mut);
 
         /* Init the Directory structure */
@@ -392,7 +406,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                         Entry *e=directory_lookup(nd,nd->dents[i].name);
                         assert(e);
                         init_entry(e, dfd, e->name);
-                        e->state=ENTRY_WAITING;
+                        e->state=ENTRY_READ_QUEUE;
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
                         if ( S_ISDIR(e->stat.st_mode) ) {
                                 submit_job_locked(nd, e, NULL, e->name, depth+1, read_directory);
@@ -406,10 +420,10 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         closedir(d);
 
         while (parent) {
-                parent->descendants += entries;
+                atomic_fetch_add(&parent->descendants, entries);
                 parent=parent->parent;
         }
-        parent_entry->state=ENTRY_READY;
+        parent_entry->state=ENTRY_READ_READY;
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
 
         out: 
@@ -432,6 +446,8 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         }
 
         Directory *nd=entry->dir;
+        assert(entry->state==ENTRY_READ_READY);
+        entry->state=ENTRY_SCAN_RUNNING;;
         assert(nd); // FIXME: can be NULL on directory read failure
         set_thread_status(file_path(parent, entry->name), "scandir");
 
@@ -445,7 +461,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
                 char *name=nd->dents[i].name;
                 Entry *e=directory_lookup(nd, name);
                 assert(e);
-                if (!e->dir) init_entry(e, nd->fd, name);
+                if (e->state==ENTRY_CREATED) init_entry(e, nd->fd, name);
         }
 
         set_thread_status(file_path(parent, entry->name), "scandir done");
@@ -560,7 +576,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                 }
         }
         dir_close(result);
-        result->fd=-1;
+        dir->state=ENTRY_SCAN_READY;
 
 out:
         pthread_cond_broadcast(&cond);

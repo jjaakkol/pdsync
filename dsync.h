@@ -29,9 +29,13 @@
 
 typedef enum { ENTRY_CREATED,   
                 ENTRY_INIT,
-                ENTRY_WAITING,
+                ENTRY_READ_QUEUE,
                 ENTRY_READING,
-                ENTRY_READY
+                ENTRY_READ_READY,
+                ENTRY_SCAN_QUEUE,
+                ENTRY_SCAN_RUNNING,
+                ENTRY_SCAN_READY,
+                ENTRY_DELETED
 } EntryState;
 
 /* Entry is a single entry in a directory */
@@ -57,7 +61,7 @@ typedef struct DirectoryStruct {
         Entry *parent_entry;
         char *name;
         int entries;
-        int descendants; /* Total number of known descendants, which grows while they are being scanned. */
+        atomic_int descendants; /* Total number of known descendants, which grows while they are being scanned. */
         int refs;
         struct DentStruct *dents;
         Entry *array;
@@ -69,6 +73,7 @@ typedef struct {
     int entries_scanned;
     int dirs_skipped;
     int files_skipped;
+    atomic_int files_synced;
     
     int pre_scan_hits;
     int pre_scan_wait_hits;
