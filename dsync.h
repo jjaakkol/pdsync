@@ -63,8 +63,8 @@ typedef struct DirectoryStruct {
         int entries;
         atomic_int descendants; /* Total number of known descendants, which grows while they are being scanned. */
         int refs;
-        struct DentStruct *dents;
         Entry *array;
+        Entry **sorted;
         pthread_mutex_t mut;
 } Directory;
 

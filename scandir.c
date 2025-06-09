@@ -187,7 +187,7 @@ void d_freedir_locked(Directory *dir)
                 free(e->name);
         }
         free(dir->array);
-        free(dir->dents);
+        free(dir->sorted);
 
         dir->magick = 0xDADDEAD;
         if (dir->fd >= 0)
@@ -295,9 +295,9 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
 }
 
 static int entrycmp(const void *x, const void *y) {
-        const Entry *a = (Entry *)x;
-        const Entry *b = (Entry *)y;
-        return strcmp(a->name, b->name);
+        Entry **a = (Entry **)x;
+        Entry **b = (Entry **)y;
+        return strcmp((*a)->name, (*b)->name);
 }
 
 /* Directory read is split in two Jobs
@@ -381,26 +381,18 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         nd->parent_entry = parent_entry;
         nd->refs = 1; /* The directory is now referenced once */
         memcpy(&nd->stat, &tmp_stat, sizeof(tmp_stat));
-        nd->dents = dents;
         nd->magick = 0xDADDAD;
         nd->fd = -1;
-        nd->array = my_calloc(entries, sizeof(Entry));
         nd->entries=entries;
+        nd->array = my_calloc(entries, sizeof(Entry));
+        nd->sorted = my_calloc(entries, sizeof(Entry *));
         pthread_mutex_init(&nd->mut, 0);
-
-        for (int i = 0; i < entries; i++) {
-                nd->array[i].name=nd->dents[i].name;
-        }
-
-        /* The entries need to be sorted alphabetically */
-        qsort(nd->array, entries, sizeof(nd->array[0]), entrycmp);
-        for (int i=1; i<nd->entries; i++) assert(strcmp(nd->array[i-1].name,nd->array[i].name)<=0);
 
         /* Init the entry array for Directories and submit jobs */
         for (int i = 0; recursive && i < entries; i++) {
-                if (nd->dents[i].d_type==DT_DIR) {
-                        Entry *e=directory_lookup(nd,nd->dents[i].name);
-                        assert(e);
+                nd->array[i].name=dents[i].name;
+                if (dents[i].d_type==DT_DIR) {
+                        Entry *e=&nd->array[i];
                         init_entry(e, dfd, e->name);
                         e->state=ENTRY_READ_QUEUE;
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
@@ -414,6 +406,11 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 }
         }
         closedir(d);
+        free(dents);
+
+        /* Now create the sorted array */
+        for (int i=0; i<entries; i++) nd->sorted[i]=&nd->array[i];
+        qsort(nd->sorted, entries, sizeof(Entry *), entrycmp);
 
         pthread_mutex_lock(&mut);
         while (parent) {
@@ -455,10 +452,8 @@ Directory *scan_directory(Directory *parent, Entry *entry)
 
         /* Initialize ((stat) all the entries which have not been stated, in readdir() order */
         for (int i = 0; i < nd->entries; i++) {
-                char *name=nd->dents[i].name;
-                Entry *e=directory_lookup(nd, name);
-                assert(e);
-                if (e->state==ENTRY_CREATED) init_entry(e, nd->fd, name);
+                Entry *e = &nd->array[i];
+                if (e->state==ENTRY_CREATED) init_entry(e, nd->fd, e->name);
         }
 
         set_thread_status(file_path(parent, entry->name), "scandir done");
@@ -713,7 +708,7 @@ Entry *directory_lookup(const Directory *d, const char *name) {
     int e=d->entries;
     int cmp=-1;
     while(s<d->entries && s<e && 
-	  (cmp=strcmp(d->array[(s+e)/2].name,name))!=0) {
+	  (cmp=strcmp(d->sorted[(s+e)/2]->name,name))!=0) {
 	if (cmp<0) {
 	    s=(s+e)/2+1;
 	} else {
@@ -721,7 +716,7 @@ Entry *directory_lookup(const Directory *d, const char *name) {
 	}
 	/* assert(s<d->entries && e<=d->entries); */
     }
-    if (cmp==0) return &d->array[(s+e)/2];
+    if (cmp==0) return d->sorted[(s+e)/2];
     return NULL;    
 }
 
