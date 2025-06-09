@@ -93,6 +93,7 @@ typedef struct {
     int dirs_active_max;
     int dirs_freed;
 
+    int slow_io_secs;
     int idle_threads;
 } Scans;
 extern Scans scans;

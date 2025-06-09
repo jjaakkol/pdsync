@@ -308,6 +308,9 @@ static int parse_options(int argc, char *argv[]) {
 
 // Fixme: print to a given stream
 static void print_scans(const Scans *scans) {
+    if (scans->slow_io_secs) {
+        printf("%8d seconds of slow IO\n", scans->slow_io_secs);
+    }
     if (scans->dirs_scanned) {
 	printf("%8d directories read\n",scans->dirs_scanned);
     }

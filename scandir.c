@@ -944,7 +944,8 @@ void start_job_threads(int job_threads, Job *job)
                 ts.tv_sec+=1;
                 if (pthread_cond_timedwait(&cond, &mut, &ts)==ETIMEDOUT)
                 {
-                        fprintf(stderr, "No jobs finished in 1s. Slow fs or deadlock?\n");
+                        fprintf(stderr, "Slow IO detected. No jobs finished in 1s. %d idle threads.\n", scans.idle_threads);
+                        scans.slow_io_secs++;
                 }
         }
         assert(scans.wait_queued==0);
