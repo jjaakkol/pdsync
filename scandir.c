@@ -418,6 +418,10 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 parent=parent->parent;
         }
         parent_entry->state=ENTRY_READ_READY;
+
+        /* Update stats */
+        if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max = scans.dirs_active;
+        scans.entries_active += entries;
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
 
         out: 
@@ -532,11 +536,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
         if (result->parent)
                 result->parent->refs++;
 
-        /* Lots of stats gathered */
-        scans.dirs_scanned++;
-        if (++scans.dirs_active > scans.dirs_active_max)
-                scans.dirs_active_max = scans.dirs_active;
-        scans.entries_active += result->entries;
+        scans.dirs_scanned++; // Update stats
 
         /* Now add the newly found directories to the job queue for pre scan */
         for (i = result->entries - 1; i >= 0; i--)
