@@ -375,10 +375,6 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 free(dents);
         }
 
-        /* Obtain a lock to stop our own children from messing with us before we are ready */
-        /* FIXME make critical section shorter */
-        pthread_mutex_lock(&mut);
-
         /* Init the Directory structure */
         nd->parent = parent;
         nd->name = my_strdup(name);
@@ -409,7 +405,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                         e->state=ENTRY_READ_QUEUE;
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
                         if ( S_ISDIR(e->stat.st_mode) ) {
-                                submit_job_locked(nd, e, NULL, e->name, depth+1, read_directory);
+                                submit_job(nd, e, NULL, e->name, depth+1, read_directory);
                         } else {
                                 // FIXME: do we need to handle a case like this?
                                 show_error_dir("read_directory inode changed. Exiting.", parent, e->name);
@@ -419,6 +415,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         }
         closedir(d);
 
+        pthread_mutex_lock(&mut);
         while (parent) {
                 atomic_fetch_add(&parent->descendants, entries);
                 parent=parent->parent;
