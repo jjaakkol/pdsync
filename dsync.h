@@ -99,10 +99,10 @@ typedef struct {
 extern Scans scans;
 typedef struct JobStruct Job;
 typedef enum {
-        JOB_DONE=1,
-        JOB_NONE=0,
-        JOB_FAILED=-1,
-        JOB_BLOCKED=-2
+        RET_OK=1,
+        RET_NONE=0,
+        RET_FAILED=-1,
+        RET_RUNNING=-2
 } JobResult;
 
 typedef JobResult (JobCallback) (
@@ -140,13 +140,15 @@ static inline void *my_realloc(void *ptr, size_t size) {
     }
     return newptr;
 }
+#define strdup(X) ( use_my_strdup_instead(X) )
+
 
 extern int progress;
 extern int privacy;
-extern int recursive; 
+extern int recursive;
 
-
-#define strdup(X) ( use_my_strdup_instead(X) )
+extern pthread_mutex_t mut;
+extern pthread_cond_t cond;
 
 // dsync.d
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
@@ -178,3 +180,7 @@ void print_progress();
 int dir_open(Directory *d);
 int dir_close(Directory *d);
 int dir_openat(Directory *d, const char *f);
+void d_freedir(Directory *dir);
+void d_freedir_locked(Directory *dir);
+
+
