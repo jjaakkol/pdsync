@@ -323,7 +323,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 case ENTRY_CREATED:  // FIXME dsync() does not init parent_entry. It probably should
                 case ENTRY_INIT: break;
                 case ENTRY_READ_QUEUE: break;
-                case ENTRY_READING: ret=JOB_BLOCKED; goto out; 
+                case ENTRY_READING: ret=JOB_RUNNING; goto out;  /* Some thread is already doing it */
                 case ENTRY_READ_READY: 
                 case ENTRY_SCAN_QUEUE:
                 case ENTRY_SCAN_RUNNING:
@@ -437,7 +437,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         assert(!parent || parent->magick == 0xDADDAD);
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
-        while(read_directory(parent, entry, NULL, entry->name, 0)==JOB_BLOCKED) {
+        while(read_directory(parent, entry, NULL, entry->name, 0)==JOB_RUNNING) {
                 pthread_mutex_lock(&mut);
                 run_any_job();
                 pthread_mutex_unlock(&mut);      
@@ -578,10 +578,10 @@ out:
 }
 
 // Checks if the WaitQueue job should be run and add it to the global queue if yes
-int job_check_wait_queue(Job *wj)
+void job_check_wait_queue(Job *wj)
 {
         Job *i;
-        if (wj==NULL) return JOB_NONE;
+        if (wj==NULL) return;
         // Find if there are any jobs to be waited left
         for (i = pre_scan_list; i; i = i->next)
         {
@@ -599,14 +599,14 @@ int job_check_wait_queue(Job *wj)
                 wj->fentry->wait_queue = NULL;
                 scans.wait_queued--;
                 scans.queued++;
-                return JOB_WAITING;
+                return;
         } else {
 #if 0
                  printf("wait queue %ld job %s (%p) waiting for %s (%p) state=%d\n", wj->offset,
                         file_path(wj->from, wj->fentry->name), wj,  
                         file_path(i->from, i->fentry->name), i->fentry, i->state);
 #endif
-                return JOB_BLOCKED;
+                return;
         }
 }
 
@@ -647,10 +647,6 @@ JobResult run_one_job(Job *j)
                 pthread_mutex_unlock(&mut);
                 j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                 pthread_mutex_lock(&mut);
-                if (j->ret == JOB_BLOCKED) {
-                        j->state = JOB_WAITING; 
-                        return JOB_BLOCKED; 
-                }
                 j->state = JOB_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
@@ -674,26 +670,22 @@ JobResult run_one_job(Job *j)
 JobResult run_any_job()
 {
         Job *j;
-#if 0
+        static _Thread_local JobCallback *last_job=NULL;
+
+        // First try to run something different than last time to keep IO queue full
         for (j = pre_scan_list; j; j = j->next)
         {
-                // run read_directory and scan_directory jobs first to avoid deadlocks
-                if (j->state == SCAN_WAITING ||
-                        (j->state==JOB_WAITING && j->callback==read_directory) )
-                        break;
+                if ((j->state == SCAN_WAITING || j->state == JOB_WAITING) && j->callback!=last_job) {
+                        last_job=j->callback;
+                        return run_one_job(j);
+                }
         }
-        if (j && run_one_job(j)==JOB_DONE)
-                return JOB_DONE; /* one job was run, return */
-#endif
+        // Then run anything. 
         for (j = pre_scan_list; j; j = j->next)
         {
-                if (j->state == SCAN_WAITING)
-                        break;
-                if (j->state == JOB_WAITING)
-                        break; /* run the job */
+                if (j->state == SCAN_WAITING || j->state == JOB_WAITING) 
+                        return run_one_job(j);
         }
-        if (j && run_one_job(j)==JOB_DONE)
-                return JOB_DONE; /* one job was run, return */
 
         /* No jobs to run, we wait */
         mark_job_start(NULL, "idle");
