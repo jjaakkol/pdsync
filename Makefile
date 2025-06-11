@@ -12,4 +12,4 @@ all: $(TARGET)
 pdsync: $(OBJS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS)
 clean:
-	rm dsync.o scandir.o pdsync
+	rm -f $(OBJS)
