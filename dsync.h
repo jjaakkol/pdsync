@@ -96,6 +96,7 @@ typedef struct {
 
     int slow_io_secs;
     int idle_threads;
+    atomic_int open_dir_count;
 } Scans;
 extern Scans scans;
 typedef struct JobStruct Job;

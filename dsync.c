@@ -333,6 +333,9 @@ static void print_scans(const Scans *scans) {
 	printf("%8d maximum number of directories in memory\n",
 	       scans->dirs_active_max);
     }
+    if (scans->open_dir_count) {
+        printf("%8d directories open now\n",scans->open_dir_count);
+    }
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
     }

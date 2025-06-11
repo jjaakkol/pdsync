@@ -7,7 +7,6 @@
 
 static Directory *lru_head = NULL;
 static Directory *lru_tail = NULL;
-atomic_int open_dir_count = 0;
 
 typedef struct DentStruct {
         char *name;
@@ -58,19 +57,17 @@ static void lru_remove(Directory *d) {
 
 // Remove LRU tail and close its fd
 static void lru_close_one() {
-        int tried=0;
         assert(lru_tail);
         Directory *old = lru_tail;
         while(old && atomic_load(&old->fdrefs)>0) {
                 old=old->lru_prev;
-                tried++;
         }
         assert(old);
         assert(old->fd>=0);
         lru_remove(old);
         close(old->fd);
         old->fd=-1;
-        atomic_fetch_add(&open_dir_count,-1);
+        atomic_fetch_add(&scans.open_dir_count,-1);
         //printf("lru_close_one: tried %d, open %d\n",tried, open_dir_count);
 }
 
@@ -163,7 +160,7 @@ static void d_freedir_locked(Directory *dir)
                 close(dir->fd);
                 dir->fd=-1;
                 lru_remove(dir);
-                atomic_fetch_add(&open_dir_count,-1);
+                atomic_fetch_add(&scans.open_dir_count,-1);
         }
 
         scans.dirs_active--;
@@ -234,7 +231,7 @@ static int dir_open_locked(Directory *d)
         if (d->fd < 0)
         {
                 // If too many open, close LRU
-                while (atomic_load(&open_dir_count) >= MAX_OPEN_DIRS) {
+                while (atomic_load(&scans.open_dir_count) >= MAX_OPEN_DIRS) {
                         lru_close_one();
                 }
                 int fd = dir_openat_locked(d->parent, d->name);
@@ -247,7 +244,7 @@ static int dir_open_locked(Directory *d)
                         return -1;
                 }
                 d->fd = fd;
-                atomic_fetch_add(&open_dir_count, 1);
+                atomic_fetch_add(&scans.open_dir_count, 1);
                 lru_add(d);
         } else {
                 lru_move_to_head(d);
