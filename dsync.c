@@ -984,7 +984,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 
         int tofd=dir_open(to);
         if (tofd<0) {
-                write_error("Directory has gone away", to, target);
+                write_error("Target directory has gone away", to, target);
                 return -1;
         }
 
