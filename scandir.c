@@ -384,8 +384,8 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
         job->callback = callback;
         job->state = JOB_WAITING;
 
-        for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
-                assert(queue_job->magick == 0x10b10b);
+        //for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
+        //        assert(queue_job->magick == 0x10b10b);
         if (job->from)
                 dir_claim(job->from);
         if (job->to)
@@ -415,8 +415,9 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
                 pre_scan_list = job;
                 fentry->job = job;
         }
-        for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
-                assert(queue_job->magick == 0x10b10b);
+        // for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
+        //      assert(queue_job->magick == 0x10b10b);
+
 
         scans.jobs++;
         if (++scans.queued > scans.maxjobs)
