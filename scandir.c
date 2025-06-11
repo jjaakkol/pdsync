@@ -70,10 +70,8 @@ int free_job(Job *job)
         }
 
         /* Freedir counts references */
-        if (job->from)
-                d_freedir_locked(job->from);
-        if (job->to)
-                d_freedir_locked(job->to);
+        if (job->from) d_freedir(job->from);
+        if (job->to) d_freedir(job->to);
         int ret = job->ret;
         job->next = NULL;
         job->state = JOB_INVALID;
@@ -143,16 +141,6 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                 show_error_dir("Failed to scan a directory", parent, dir->name);
                 goto out;
         }
-        dir_open(result);
-        if (result->fd<0) {
-                d_freedir(result);
-                goto out; 
-        }
-
-        if (result == NULL)
-                goto out;
-        if (result->parent)
-                result->parent->refs++;
 
         scans.dirs_scanned++; // Update stats
 
@@ -177,7 +165,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                         d->callback = NULL;
                         d->next = pre_scan_list;
                         pre_scan_list = d;
-                        result->refs++; /* The directory is now referenced by the job */
+                        dir_claim(result); /* The directory is now referenced by the Job */
                         scans.pre_scan_allocated++;
                         scans.queued++;
                         scans.jobs++;
@@ -185,13 +173,13 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                                 scans.maxjobs = scans.queued;
                 }
         }
-        dir_close(result);
         dir->state=ENTRY_SCAN_READY;
 
 out:
         pthread_cond_broadcast(&cond);
         pthread_mutex_unlock(&mut);
 
+        assert(result->ref>0);
         return result;
 }
 
@@ -399,9 +387,9 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
         for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
                 assert(queue_job->magick == 0x10b10b);
         if (job->from)
-                job->from->refs++;
+                dir_claim(job->from);
         if (job->to)
-                job->to->refs++;
+                dir_claim(job->to);
         if (job->offset == DSYNC_FILE_WAIT || job->offset == DSYNC_DIR_WAIT)
         {
                 assert(job->fentry->wait_queue == NULL);

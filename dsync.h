@@ -55,17 +55,18 @@ typedef struct {
 typedef struct DirectoryStruct {
         int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
         int fd;
-        int fdrefs; // Count references to fd so that we can cache fds
+        atomic_int fdrefs; // Count references to fd so that we can cache fds
         struct stat stat;
         struct DirectoryStruct *parent;
         Entry *parent_entry;
         char *name;
         int entries;
         atomic_int descendants; /* Total number of known descendants, which grows while they are being scanned. */
-        int refs;
+        atomic_int ref;
         Entry *array;
         Entry **sorted;
-        pthread_mutex_t mut;
+        struct DirectoryStruct *lru_prev;
+        struct DirectoryStruct *lru_next;
 } Directory;
 
 typedef struct {
@@ -181,6 +182,6 @@ int dir_open(Directory *d);
 int dir_close(Directory *d);
 int dir_openat(Directory *d, const char *f);
 void d_freedir(Directory *dir);
-void d_freedir_locked(Directory *dir);
+void dir_claim(Directory *dir);
 
 
