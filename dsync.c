@@ -311,11 +311,11 @@ static void print_scans(const Scans *scans) {
     if (scans->slow_io_secs) {
         printf("%8d seconds of slow IO\n", scans->slow_io_secs);
     }
-    if (scans->dirs_scanned) {
-	printf("%8d directories read\n",scans->dirs_scanned);
+    if (scans->dirs_read) {
+	printf("%8d directories read\n",scans->dirs_read);
     }
-    if (scans->entries_scanned) {
-	printf("%8d inodes checked\n",scans->entries_scanned);
+    if (scans->entries_checked) {
+	printf("%8d files checked\n",scans->entries_checked);
     }
     if (scans->dirs_skipped) {
 	printf("%8d directories skipped\n",scans->dirs_skipped);
@@ -338,6 +338,12 @@ static void print_scans(const Scans *scans) {
     }
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
+    }
+    if (scans->read_directory_jobs) {
+	printf("%8d read directory jobs queued\n",scans->read_directory_jobs);
+    }
+    if (scans->read_directory_hits) {
+	printf("%8d read directory hits\n",scans->read_directory_hits);
     }
     if (scans->pre_scan_hits) {
 	printf("%8d directory prescan hits\n",scans->pre_scan_hits);

@@ -70,11 +70,14 @@ typedef struct DirectoryStruct {
 } Directory;
 
 typedef struct {
-    int dirs_scanned;
-    int entries_scanned;
+    atomic_int dirs_read;
+    atomic_int entries_checked;
     int dirs_skipped;
     int files_skipped;
     atomic_int files_synced;
+
+    atomic_int read_directory_jobs;
+    atomic_int read_directory_hits;
     
     int pre_scan_hits;
     int pre_scan_wait_hits;
