@@ -24,6 +24,8 @@ static pthread_mutex_t lru_mut = PTHREAD_MUTEX_INITIALIZER;
 
 // Add directory to LRU head
 static void lru_add(Directory *d) {
+    assert(d->fd>0);
+    atomic_fetch_add(&scans.open_dir_count, 1);
     d->lru_prev = NULL;
     d->lru_next = lru_head;
     if (lru_head) lru_head->lru_prev = d;
@@ -48,6 +50,10 @@ static void lru_move_to_head(Directory *d) {
 
 // Remove directory from LRU list
 static void lru_remove(Directory *d) {
+        assert(d->fd>=0);
+        close(d->fd);
+        d->fd=-1;
+        atomic_fetch_add(&scans.open_dir_count,-1);
         if (d->lru_prev) d->lru_prev->lru_next = d->lru_next;
         if (d->lru_next) d->lru_next->lru_prev = d->lru_prev;
         if (lru_head == d) lru_head = d->lru_next;
@@ -59,15 +65,11 @@ static void lru_remove(Directory *d) {
 static void lru_close_one() {
         assert(lru_tail);
         Directory *old = lru_tail;
-        while(old && atomic_load(&old->fdrefs)>0) {
+        while(old && old->fdrefs>0) {
                 old=old->lru_prev;
         }
         assert(old);
-        assert(old->fd>=0);
         lru_remove(old);
-        close(old->fd);
-        old->fd=-1;
-        atomic_fetch_add(&scans.open_dir_count,-1);
         //printf("lru_close_one: tried %d, open %d\n",tried, open_dir_count);
 }
 
@@ -157,10 +159,7 @@ static void d_freedir_locked(Directory *dir)
         assert(dir->fdrefs==0);
 
         if (dir->fd >= 0) {
-                close(dir->fd);
-                dir->fd=-1;
                 lru_remove(dir);
-                atomic_fetch_add(&scans.open_dir_count,-1);
         }
 
         scans.dirs_active--;
@@ -244,7 +243,6 @@ static int dir_open_locked(Directory *d)
                         return -1;
                 }
                 d->fd = fd;
-                atomic_fetch_add(&scans.open_dir_count, 1);
                 lru_add(d);
         } else {
                 lru_move_to_head(d);
