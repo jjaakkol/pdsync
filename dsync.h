@@ -178,8 +178,9 @@ void show_error_dir(const char *message, const Directory *parent, const char *fi
 JobResult run_one_job(Job *j);
 JobResult run_any_job();
 int print_jobs(FILE *f);
-void set_thread_status(const char *file, const char *status);
-void mark_job_start(const char *file, const char *s);
+void set_thread_status_f(const char *file, const char *s, const char *func, int mark);
+#define set_thread_status(file,s) set_thread_status_f(file, s, __func__, 0)
+#define mark_job_start(file,s) set_thread_status_f(file, s, __func__, 1)
 void print_progress();
 int dir_open(Directory *d);
 int dir_close(Directory *d);

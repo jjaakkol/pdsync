@@ -338,25 +338,12 @@ struct ThreadStatus
 static _Thread_local struct ThreadStatus status = PTHREAD_MUTEX_INITIALIZER;
 static struct ThreadStatus *first_status = NULL;
 
-void set_thread_status_unlocked(const char *file, const char *s)
-{
-        snprintf(status.status, MAXLEN - 1, "%-12s : %.100s", s, (file) ? file : "");
-}
-void set_thread_status(const char *file, const char *s)
+void set_thread_status_f(const char *file, const char *s, const char *func, int mark)
 {
         if (progress < 3)
                 return;
-        pthread_mutex_lock(&status.mut);
-        set_thread_status_unlocked(file, s);
-        pthread_mutex_unlock(&status.mut);
-}
-
-void mark_job_start(const char *file, const char *s)
-{
-        pthread_mutex_lock(&status.mut);
-        set_thread_status_unlocked(file, s);
-        clock_gettime(CLOCK_BOOTTIME, &status.job_start);
-        pthread_mutex_unlock(&status.mut);
+        if (mark) clock_gettime(CLOCK_BOOTTIME, &status.job_start);
+        snprintf(status.status, MAXLEN - 1, "%12s():%-12s : %.100s", func, s, (file) ? file : "");
 }
 
 /* Threads wait in this loop for jobs to run */
