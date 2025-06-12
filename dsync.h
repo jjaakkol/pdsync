@@ -35,7 +35,8 @@ typedef enum { ENTRY_CREATED,
                 ENTRY_SCAN_QUEUE,
                 ENTRY_SCAN_RUNNING,
                 ENTRY_SCAN_READY,
-                ENTRY_DELETED
+                ENTRY_DELETED,
+                ENTRY_FAILED // IO Error or another error
 } EntryState;
 
 /* Entry is a single entry in a directory */

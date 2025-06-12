@@ -213,7 +213,6 @@ static int dir_openat_locked(Directory *parent, const char *name)
                         abort();
                 }
                 show_error_dir("dir_openat", parent, name);
-                abort();
         }
         if (parent && pfd>=0) dir_close_locked(parent);
         return dfd;
@@ -307,7 +306,8 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         DIR *d = NULL;
         struct stat tmp_stat;
         int entries = 0;
-        int ret=RET_OK; 
+        Dent *dents = NULL;
+
 
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
@@ -320,13 +320,14 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 case ENTRY_CREATED:  // FIXME dsync() does not init parent_entry. It probably should
                 case ENTRY_INIT: break;
                 case ENTRY_READ_QUEUE: break;
-                case ENTRY_READING: ret=RET_RUNNING; goto out;  /* Some other thread is already reding it */
+                case ENTRY_READING: job_unlock(); return RET_RUNNING;  /* Some other thread is already reding it */
                 case ENTRY_READ_READY: 
                 case ENTRY_SCAN_QUEUE:
                 case ENTRY_SCAN_RUNNING:
                 case ENTRY_SCAN_READY:
                         atomic_fetch_add(&scans.read_directory_hits,1);
                         goto out; // Already done 
+                case ENTRY_FAILED: goto out;     // IO error happened. Don't retry.
                 case ENTRY_DELETED: goto out;    // Deleted already
         }
 
@@ -339,14 +340,14 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
 
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL || fstat(dfd, &tmp_stat) < 0)
         {
-                show_error_dir("read_directory", parent, name);
-                if (dfd >= 0) close(dfd);
-                ret=RET_FAILED;
-                goto out;
+                parent_entry -> error=errno;
+                parent_entry->state=ENTRY_FAILED;
+                show_error_dir("open directory", parent, name);
+                goto fail;
         }
 
         /* Read the directory and save the names and dents */
-        Dent *dents = my_calloc(allocated, sizeof(*dents));
+        dents = my_calloc(allocated, sizeof(*dents));
         errno = 0;
         struct dirent *dent;
         while ((dent = readdir(d)))
@@ -371,9 +372,11 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         }
         if (errno)
         {
+                parent_entry->error=errno;
                 show_error_dir("readdir", parent, name);
-                free(dents);
+                goto fail;
         }
+        //dents = my_realloc(dents, sizeof(*dents) * entries); /* Waste less memory */
 
         /* Init the Directory structure */
         nd->parent = parent;
@@ -394,17 +397,13 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 if (dents[i].d_type==DT_DIR) {
                         Entry *e=&nd->array[i];
                         init_entry(e, dfd, e->name);
-                        e->state=ENTRY_READ_QUEUE;
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
                         if ( S_ISDIR(e->stat.st_mode) ) {
+                                e->state=ENTRY_READ_QUEUE;
                                 if (e->stat.st_nlink==2 || depth<2) {
                                         submit_job(nd, e, NULL, e->name, depth+1, read_directory);
                                         atomic_fetch_add(&scans.read_directory_jobs,1);
                                 }
-                        } else {
-                                // FIXME: do we need to handle a case like this?
-                                show_error_dir("read_directory() Directoru is not a directory. Exiting.", parent, e->name);
-                                exit(1);
                         }
                 }
         }
@@ -430,7 +429,18 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
 
         out: 
         job_unlock();
-        return ret;
+        return RET_OK;
+
+        fail:
+        job_lock();
+        if (dfd>=0) close(dfd);
+        for(int i=0; i<entries; i++) free(dents[i].name);
+        free(dents);
+        parent_entry->state=ENTRY_FAILED;
+        parent_entry->dir=NULL;
+        free(nd);
+        job_unlock();
+        return RET_FAILED;
 }
 
 /* scan_directory can be called from multiple threads */
@@ -445,11 +455,12 @@ Directory *scan_directory(Directory *parent, Entry *entry)
                 run_any_job();
                 job_unlock();
         }
+        if (entry->state==ENTRY_FAILED) return NULL;
 
         Directory *nd=entry->dir;
         assert(entry->state==ENTRY_READ_READY);
         entry->state=ENTRY_SCAN_RUNNING;;
-        assert(nd); // FIXME: can be NULL on directory read failure
+        assert(nd);
         set_thread_status(file_path(parent, entry->name), "scandir");
 
         if (dir_open(nd) < 0) {

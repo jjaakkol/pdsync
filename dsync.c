@@ -490,7 +490,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
  
         del=pre_scan_directory(parent, tentry);
         if (!del) {
-                write_error("scan removed directory", parent, tentry->name);
+                item("ERROR", parent, tentry->name);
                 goto fail;
         }
         int dfd=dir_open(del);
@@ -554,6 +554,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
 int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int fromfd=-1;
         int tofd=-1;
+        int to_dfd=-1;
         struct stat from_stat;
         int sparse_copy=0;
         int ret=0;
@@ -571,10 +572,10 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         int from_dfd = dir_open(from);
         fromfd=openat(from_dfd, source, O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
-                write_error("open", from, source); /* FIXME: this is not a write error*/
-                goto fail;
+                show_error_dir("open", from, source);
+                goto fail; 
         }
-        int to_dfd = dir_open(to);
+        to_dfd = dir_open(to);
         tofd=openat(to_dfd, target, O_WRONLY|O_CREAT|O_NOFOLLOW, 0666);
         if(tofd<0) {
                 write_error("open", to, target);
@@ -683,7 +684,9 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         return ret;
  fail:
-        ret = -1;
+        item("ERROR", from, target);
+        fentry->state=ENTRY_FAILED;
+        ret = RET_FAILED;
         goto end;
 }
 
@@ -903,7 +906,7 @@ void skip_entry(Directory *to, const Entry *fentry) {
 }
 
 /* Job call back to update the inode bits */
-int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
+JobResult sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
         set_thread_status(file_path(to, target),"metadata");
 
@@ -912,14 +915,14 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
 
         int dfd=dir_open(to);
         if (dfd==-1) {
-                write_error("open target parent", to, target);
-                return -1;
+                show_error_dir("open parent", to, fentry->name);
+                goto fail; 
         }
 
         /* Lookup the existing inode bits */
         struct stat to_stat;
-        if (fstatat(dfd, fentry->name, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
-                write_error("sync_metadata can't stat target (fstatat)", to, fentry->name);
+        if (fstatat(dfd, target, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
+                write_error("sync_metadata can't stat target (fstatat)", to, target);
                 goto fail;
         }
 
@@ -982,9 +985,13 @@ int sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const ch
                         opers.times++;
                 }
         }
-        fail:
+
+        out:
         dir_close(to);
         return ret;
+        fail:
+        ret=RET_FAILED;
+        goto out;
 }
 
 // Job callback to create one target inode, directory, file, FIFO, ... 
@@ -1112,6 +1119,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 
     from=pre_scan_directory(from_parent, parent_fentry);
     if (from==NULL) {
+        item("ERROR", from_parent, parent_fentry->name);
 	opers.read_errors++;
 	goto fail;
     }
@@ -1125,13 +1133,9 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         parent_tentry->name=my_strdup(target); 
     }
     to=pre_scan_directory(to_parent, parent_tentry);
-
-    if ( delete_only && to==NULL ) {
-	goto fail;
-    }
-    if ( !dryrun && to==NULL) {
-	write_error("readdir", to_parent, todir);
-	goto fail;
+    if (to==NULL) {
+        item("ERROR", to_parent, target);
+        goto fail;
     }
     
     if (delete) remove_old_entries(from, to);

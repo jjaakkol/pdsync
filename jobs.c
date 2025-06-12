@@ -186,7 +186,7 @@ out:
         pthread_cond_broadcast(&cond);
         pthread_mutex_unlock(&mut);
 
-        assert(result->ref>0);
+        assert(!result || result->ref>0);
         return result;
 }
 
@@ -254,19 +254,22 @@ JobResult run_one_job(Job *j)
         case JOB_WAITING:
                 assert(j->magick == 0x10b10b);
                 assert(j->fentry);
-                j->state = JOB_RUNNING;
-                j->tid = pthread_self();
-                mark_job_start(file_path(j->from, j->fentry->name), "job start");
-                pthread_mutex_unlock(&mut);
-                j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
-                pthread_mutex_lock(&mut);
+                if (j->fentry->state!=ENTRY_FAILED) {
+                        /* No point in running job if there was an error */
+                        j->state = JOB_RUNNING;
+                        j->tid = pthread_self();
+                        mark_job_start(file_path(j->from, j->fentry->name), "job start");
+                        pthread_mutex_unlock(&mut);
+                        j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
+                        pthread_mutex_lock(&mut);
+                }
                 j->state = JOB_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
                 if (fentry) job_check_wait_queue(fentry->wait_queue);
                 if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
-                return RET_OK;
+                return (j->fentry->state==ENTRY_FAILED) ? RET_FAILED : j->ret;
 
         default:
                 return RET_NONE;
