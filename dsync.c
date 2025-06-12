@@ -131,6 +131,8 @@ static struct option options[]= {
     { NULL, 0, NULL, 0 }       
 };
 
+int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
+
 static void show_version() {
     printf("pdsync "VERSION" (C) 09.2000 - 05.2025 Jani Jaakkola (jani.jaakkola@helsinki.fi)\n");
 }

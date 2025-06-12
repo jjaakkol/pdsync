@@ -152,11 +152,7 @@ extern int progress;
 extern int privacy;
 extern int recursive;
 
-extern pthread_mutex_t mut;
-extern pthread_cond_t cond;
 
-// dsync.d
-int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
 
 // scandir.c
 // submit_job() flags
@@ -164,6 +160,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 #define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
 Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 Job *submit_job_locked(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+void job_lock();
+void job_unlock();
 
 Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *parent, Entry *e);

@@ -315,7 +315,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
 
         if (depth>0) atomic_fetch_add(&scans.read_directory_jobs, -1);
 
-        pthread_mutex_lock(&mut);
+        job_lock();
         switch (parent_entry->state) {
                 case ENTRY_CREATED:  // FIXME dsync() does not init parent_entry. It probably should
                 case ENTRY_INIT: break;
@@ -335,7 +335,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         Directory *nd=my_calloc(1, sizeof(Directory));
         parent_entry->dir=nd; // will be filled when we finish
         parent_entry->state=ENTRY_READING;
-        pthread_mutex_unlock(&mut);
+        job_unlock();
 
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL || fstat(dfd, &tmp_stat) < 0)
         {
@@ -415,7 +415,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         for (int i=0; i<entries; i++) nd->sorted[i]=&nd->array[i];
         qsort(nd->sorted, entries, sizeof(Entry *), entrycmp);
 
-        pthread_mutex_lock(&mut);
+        job_lock(); /* FIXME: maybe lru lock is enough */
         while (parent) {
                 atomic_fetch_add(&parent->descendants, entries);
                 parent=parent->parent;
@@ -429,8 +429,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
 
         out: 
-        pthread_cond_broadcast(&cond);
-        pthread_mutex_unlock(&mut);
+        job_unlock();
         return ret;
 }
 
@@ -442,9 +441,9 @@ Directory *scan_directory(Directory *parent, Entry *entry)
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
         while(read_directory(parent, entry, NULL, entry->name, 0)==RET_RUNNING) {
-                pthread_mutex_lock(&mut);
+                job_lock();
                 run_any_job();
-                pthread_mutex_unlock(&mut);      
+                job_unlock();
         }
 
         Directory *nd=entry->dir;

@@ -28,10 +28,19 @@ typedef struct JobStruct
 } Job;
 
 
-pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-Job *pre_scan_list = NULL;
+static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+static Job *pre_scan_list = NULL;
 
+void job_lock(void) {
+        pthread_mutex_lock(&mut);
+}
+
+void job_unlock(void) {
+        int rc = pthread_mutex_trylock(&mut);
+        assert(rc == EBUSY);
+        pthread_mutex_unlock(&mut);
+}
 
 /* Remove job from queue's and free its resources. Mutex must be held. */
 int free_job(Job *job)
