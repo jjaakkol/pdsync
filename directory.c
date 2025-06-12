@@ -104,7 +104,7 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
                         entry->link[link_len] = 0;
                 }
         }
-        scans.entries_scanned++;
+        atomic_fetch_add(&scans.entries_checked, 1);
         entry->state=ENTRY_INIT;
         return entry;
 }
@@ -313,7 +313,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         assert(!parent || parent->magick == 0xDADDAD);
         assert(!parent || parent->ref>0);
 
-        set_thread_status(file_path(parent,name),"read_directory");
+        if (depth>0) atomic_fetch_add(&scans.read_directory_jobs, -1);
 
         pthread_mutex_lock(&mut);
         switch (parent_entry->state) {
@@ -324,11 +324,14 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 case ENTRY_READ_READY: 
                 case ENTRY_SCAN_QUEUE:
                 case ENTRY_SCAN_RUNNING:
-                case ENTRY_SCAN_READY: goto out; // Already done 
+                case ENTRY_SCAN_READY:
+                        atomic_fetch_add(&scans.read_directory_hits,1);
+                        goto out; // Already done 
                 case ENTRY_DELETED: goto out;    // Deleted already
         }
 
         // We won the race and get to read the directory
+        set_thread_status(file_path(parent,name),"readdir");
         Directory *nd=my_calloc(1, sizeof(Directory));
         parent_entry->dir=nd; // will be filled when we finish
         parent_entry->state=ENTRY_READING;
@@ -394,17 +397,19 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                         e->state=ENTRY_READ_QUEUE;
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
                         if ( S_ISDIR(e->stat.st_mode) ) {
-                                submit_job(nd, e, NULL, e->name, depth+1, read_directory);
+                                if (e->stat.st_nlink==2 || depth<2) {
+                                        submit_job(nd, e, NULL, e->name, depth+1, read_directory);
+                                        atomic_fetch_add(&scans.read_directory_jobs,1);
+                                }
                         } else {
                                 // FIXME: do we need to handle a case like this?
-                                show_error_dir("read_directory inode changed. Exiting.", parent, e->name);
+                                show_error_dir("read_directory() Directoru is not a directory. Exiting.", parent, e->name);
                                 exit(1);
                         }
                 }
         }
         free(dents);
         closedir(d);
-
 
         /* Now create the sorted array */
         for (int i=0; i<entries; i++) nd->sorted[i]=&nd->array[i];
@@ -420,6 +425,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         /* Update stats */
         if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max = scans.dirs_active;
         scans.entries_active += entries;
+        atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
 
         out: 

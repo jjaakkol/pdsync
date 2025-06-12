@@ -142,8 +142,6 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir)
                 goto out;
         }
 
-        scans.dirs_scanned++; // Update stats
-
         /* Now add the newly found directories to the job queue for pre scan */
         for (i = result->entries - 1; i >= 0; i--)
         {
