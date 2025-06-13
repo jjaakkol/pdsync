@@ -248,7 +248,7 @@ JobResult run_one_job(Job *j)
                 pthread_cond_broadcast(&cond);
                 if (fentry) job_check_wait_queue(fentry->wait_queue);
                 if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
-                return RET_OK;
+                return (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
                 break;
 
         case JOB_WAITING:
@@ -268,8 +268,9 @@ JobResult run_one_job(Job *j)
                 pthread_cond_broadcast(&cond);
                 if (fentry) job_check_wait_queue(fentry->wait_queue);
                 if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
+                JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
-                return (j->fentry->state==ENTRY_FAILED) ? RET_FAILED : j->ret;
+                return ret;
 
         default:
                 return RET_NONE;
