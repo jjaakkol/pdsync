@@ -242,13 +242,12 @@ JobResult run_one_job(Job *j)
                 pthread_mutex_unlock(&mut);
                 j->result = scan_directory(j->from, j->fentry);
                 pthread_mutex_lock(&mut);
-                set_thread_status(file_path(j->from, j->fentry->name), "scanned dir");
                 j->state = SCAN_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
-                if (fentry) job_check_wait_queue(fentry->wait_queue);
-                if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
-                return (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
+                //if (fentry) job_check_wait_queue(fentry->wait_queue);
+                //if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
+                return RET_OK;
                 break;
 
         case JOB_WAITING:
@@ -266,8 +265,8 @@ JobResult run_one_job(Job *j)
                 j->state = JOB_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
-                if (fentry) job_check_wait_queue(fentry->wait_queue);
-                if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
+                //if (fentry) job_check_wait_queue(fentry->wait_queue);
+                //if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
                 JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 return ret;
@@ -282,13 +281,28 @@ JobResult run_one_job(Job *j)
  * - by the job queue thread to run jobs
  * - when threads are waiting for another thread to finish a job
  * This is called with the lock held.
- * This is where we would apply a scheduling policy, if there was one.
+ * This is where we would apply a Job scheduling policy, if there was one.
  */
 JobResult run_any_job()
 {
-        Job *j;
-        static _Thread_local JobCallback *last_job=NULL;
+        Job *j=pre_scan_list;
+        while(j && j->state==SCAN_READY) j=j->next; // Skip ready jobs to find first runnable job
+        if (j && (j->state == SCAN_WAITING || j->state == JOB_WAITING) )
+                return run_one_job(j); // First runnable job is done waiting for others
+        for (; j; j=j->next) {
+                if ( (j->state == SCAN_WAITING || j->state == JOB_WAITING) &&
+                        j->offset!=DSYNC_FILE_WAIT && j->offset!=DSYNC_DIR_WAIT )
+                        return run_one_job(j); /* First runnable which is not waiting for other jobs */
+        }
 
+        /* No jobs to run. We need to wait and release the lock. */
+        mark_job_start(NULL, "idle");
+        scans.idle_threads++;
+        pthread_cond_wait(&cond, &mut);
+        scans.idle_threads--;
+        return RET_NONE;
+#if 0
+        static _Thread_local JobCallback *last_job=NULL;
         // First try to run something different than last time to keep IO queue full
         for (j = pre_scan_list; j; j = j->next)
         {
@@ -297,19 +311,7 @@ JobResult run_any_job()
                         return run_one_job(j);
                 }
         }
-        // Then run anything. 
-        for (j = pre_scan_list; j; j = j->next)
-        {
-                if (j->state == SCAN_WAITING || j->state == JOB_WAITING) 
-                        return run_one_job(j);
-        }
-
-        /* No jobs to run, we wait */
-        mark_job_start(NULL, "idle");
-        scans.idle_threads++;
-        pthread_cond_wait(&cond, &mut);
-        scans.idle_threads--;
-        return RET_NONE;
+#endif
 }
 
 Entry *directory_lookup(const Directory *d, const char *name) {
@@ -356,10 +358,7 @@ void *job_queue_loop(void *arg)
         first_status = &status;
         mark_job_start(NULL, "thread started");
         /* Loop until exit() is called*/
-        while (1)
-        {
-                run_any_job();
-        }
+        while (1) run_any_job();
         /* Never return */
 }
 
@@ -388,16 +387,7 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
                 dir_claim(job->from);
         if (job->to)
                 dir_claim(job->to);
-        if (job->offset == DSYNC_FILE_WAIT || job->offset == DSYNC_DIR_WAIT)
-        {
-                assert(job->fentry->wait_queue == NULL);
-                job->fentry->wait_queue = job; // Put it to wait queue
-                scans.wait_queued++;
-                //printf("wait queue job %p for %p submitted. queued=%5d\n", job, job->fentry, scans.wait_queued);
-                job_check_wait_queue(job); // Check and schedule it normally, if it can be run immediately.
-                return job; 
-        }
-        else if (fentry->job)
+        if (fentry->job)
         {
                 /* Put it last to its own Entry queue */
                 Job *prev = fentry->job;
