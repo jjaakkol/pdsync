@@ -558,7 +558,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         struct stat from_stat;
         int sparse_copy=0;
         int ret=0;
-        off_t copy_job_size=128*1024*1024;
+        off_t copy_job_size=16*1024*1024;
         int num_jobs=0;
         char buf[32];
 
