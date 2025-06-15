@@ -81,40 +81,6 @@ int free_job(Job *job)
         return ret;
 }
 
-#if 0
-// Checks if the WaitQueue job should be run and add it to the global queue if yes
-void job_check_wait_queue(Job *wj)
-{
-        Job *i;
-        if (wj==NULL) return;
-        // Find if there are any jobs to be waited left
-        for (i = pre_scan_list; i; i = i->next)
-        {
-                if (wj->offset == DSYNC_FILE_WAIT && i->fentry == wj->fentry && i->state!=SCAN_READY && i->state!=JOB_READY)
-                        break;
-                if (wj->offset == DSYNC_DIR_WAIT && i->from && i->from->parent_entry==wj->fentry && i->state!=SCAN_READY && i->state!=JOB_READY)
-                        break;
-        }
-        if (i == NULL)
-        {
-                // Schedule the job that was waiting
-                //printf("wait queue job %s (%p) scheduled \n", file_path(wj->from, wj->fentry->name), wj);
-                wj->next = pre_scan_list;
-                pre_scan_list = wj;
-                scans.wait_queued--;
-                scans.queued++;
-                return;
-        } else {
-
-                 printf("wait queue %ld job %s (%p) waiting for %s (%p) state=%d\n", wj->offset,
-                        file_path(wj->from, wj->fentry->name), wj,  
-                        file_path(i->from, i->fentry->name), i->fentry, i->state);
-                return;
-        }
-}
-#endif
-
-
 /* Runs one job: can be called by a thread when waiting jobs to finish.
  * Assumes mutex is held.
  */
@@ -122,7 +88,6 @@ JobResult run_one_job(Job *j)
 {
         assert(j && j->magick == 0x10b10b);
         Entry *fentry=j->fentry;
-        //Entry *parent_entry=(j->from) ? j->from->parent_entry : NULL;
         
         switch (j->state)
         {
@@ -136,8 +101,6 @@ JobResult run_one_job(Job *j)
                 j->state = SCAN_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
-                //if (fentry) job_check_wait_queue(fentry->wait_queue);
-                //if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
                 return RET_OK;
                 break;
 
@@ -156,8 +119,6 @@ JobResult run_one_job(Job *j)
                 j->state = JOB_READY;
                 scans.queued--;
                 pthread_cond_broadcast(&cond);
-                //if (fentry) job_check_wait_queue(fentry->wait_queue);
-                //if (parent_entry) job_check_wait_queue(parent_entry->wait_queue);
                 JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 return ret;
@@ -432,7 +393,6 @@ void start_job_threads(int job_threads, Job *job)
                         scans.slow_io_secs++;
                 }
         }
-        assert(scans.wait_queued==0);
         pthread_mutex_unlock(&mut);
         //assert(pre_scan_list==NULL);
 }

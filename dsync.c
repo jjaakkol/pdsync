@@ -464,14 +464,13 @@ void print_progress() {
         int files_synced=atomic_load(&scans.files_synced);
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s |%5d queue|%5d wait |%3d idle |\n",
+        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s |%5d queued|%3d idle |\n",
                 files_synced,
                 files_total, 
                 1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
                 scans.queued,
-                scans.wait_queued,
                 scans.idle_threads
         );
         if (progress>=2) print_opers(tty_stream,&opers);

@@ -47,7 +47,6 @@ typedef struct {
         char *link;
         int error;                          /* If there was a IO error with stat() */
         struct JobStruct *last_job;         /* Last queued job associated with this entry  */
-        //struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
         struct DirectoryStruct *dir;
 } Entry;
 
@@ -91,7 +90,6 @@ typedef struct {
     int jobs;
     int maxjobs;
     int queued;
-    int wait_queued;
 
     int dirs_active;
     int entries_active;
