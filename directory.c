@@ -170,8 +170,7 @@ static void d_freedir_locked(Directory *dir)
         {
                 dir->entries--;
                 Entry *e = &dir->array[dir->entries];
-                assert(!e->job); // no job should be running on this entry
-                assert(!e->wait_queue);
+                assert(!e->last_job); // no job should be running on this entry
                 if (e->link)
                         free(e->link);
                 free(e->name);
@@ -480,4 +479,96 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         return nd;
 }
 
+
+/*
+ * FIXME rethink this
+ * - If it isn't scanned yet we scan it in this thead or wait for it to be scanned
+ * - If it is already done we return the result
+ * - Otherwise we do the scan
+ * - Launch scan jobs for subdirectories
+ */
+Directory *pre_scan_directory(Directory *parent, Entry *dir) {
+
+        assert(dir);
+
+        return scan_directory(parent,dir);
+}
+#if 0        
+{
+        Directory *result = NULL;
+        int i;
+        Job *d = dir->job;
+        if (dir->job && (dir->job->state==SCAN_WAITING || dir->job->state==SCAN_RUNNING || dir->job->state==SCAN_READY)) {
+                /* We have a prescan job */
+                switch (d->state) {
+                case SCAN_WAITING:
+                        /* The job for this directory has not started yet. Run it ourselves */
+                        scans.pre_scan_misses++;
+                        scans.pre_scan_hits++;
+                        break;
+                default: assert(0);
+                }
+                scans.pre_scan_used++;
+                result = d->result;
+                free_job(dir->job);
+                assert(!dir->job || dir->job->magick == 0x10b10b);
+
+                pthread_cond_broadcast(&cond); /* wake up anyone who was waiting for this */
+        } else scans.pre_scan_misses++; // No prescan job was running. 
+
+        if (!result) {
+                set_thread_status(file_path(parent, dir->name), "scanning dir");
+                /* The directory was not in queue. Scan it in this thread */
+                pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
+                result = scan_directory(parent, dir);
+                pthread_mutex_lock(&mut);
+        }
+        if (!result) {
+                show_error_dir("Failed to scan a directory", parent, dir->name);
+                goto out;
+        }
+
+        /* Now add the newly found directories to the job queue for pre scan */
+        for (i = result->entries - 1; i >= 0; i--)
+        {
+                if (S_ISDIR(result->array[i].stat.st_mode))
+                {
+                        if (result->array[i].job)
+                        {
+                                scans.pre_scan_too_late++;
+                                /* Already has a job, skip it */
+                                continue;
+                        }
+                        Job *d = my_calloc(1, sizeof(*d));
+                        d->magick = 0x10b10b;
+                        d->fentry = &result->array[i];
+                        result->array[i].job = d; /* Link the entry to the job */
+                        d->from = result;
+                        d->result = NULL;
+                        d->state = SCAN_WAITING;
+                        d->callback = NULL;
+                        if (last_job) last_job->next=d;
+                        else {
+                                assert(pre_scan_list==NULL);
+                                last_job=pre_scan_list=d;
+                                d->next = pre_scan_list;
+                        }
+                        dir_claim(result); /* The directory is now referenced by the Job */
+                        scans.pre_scan_allocated++;
+                        scans.queued++;
+                        scans.jobs++;
+                        if (scans.queued > scans.maxjobs)
+                                scans.maxjobs = scans.queued;
+                }
+        }
+        dir->state=ENTRY_SCAN_READY;
+
+out:
+        pthread_cond_broadcast(&cond);
+        pthread_mutex_unlock(&mut);
+
+        assert(!result || result->ref>0);
+        return result;
+}
+#endif
 

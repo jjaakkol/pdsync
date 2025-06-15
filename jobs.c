@@ -31,6 +31,7 @@ typedef struct JobStruct
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static Job *pre_scan_list = NULL;
+static Job *last_job=NULL;
 
 void job_lock(void) {
         pthread_mutex_lock(&mut);
@@ -50,25 +51,14 @@ int free_job(Job *job)
         assert(job->state == JOB_READY || job->state == SCAN_READY);
         assert(job->magick == 0x10b10b);
 
-        /* If Job happens to be fentry queue first, update the fentry queue */
-        if (job->fentry->job == job)
-        {
-                if (job->next && job->fentry == job->next->fentry)
-                {
-                        // printf("Job %p fentry queue updated %p\n", job, job->fentry);
-                        job->fentry->job = job->next;
-                }
-                else
-                {
-                        // printf("Job %p fentry queue clear %p. Next fentry queue %p\n", job, job->fentry, (job->next) ? job->next->fentry : NULL );
-                        job->fentry->job = NULL;
-                }
-        }
+        /* If job is last in its fentry queue the fentry queue is done and can be marked empty */
+        if (job->fentry->last_job == job) job->fentry->last_job=NULL;
 
         /* Remove job from pre_scan_list Job queue */
-        if (pre_scan_list == job)
+        if (pre_scan_list == job) {
                 pre_scan_list = job->next;
-        else
+                if (pre_scan_list==NULL) last_job=NULL;
+        } else
         {
                 Job *prev = pre_scan_list;
                 assert(prev->magick == 0x10b10b);
@@ -76,6 +66,7 @@ int free_job(Job *job)
                         prev = prev->next;
                 assert(prev); // the job must be in the list
                 prev->next = job->next;
+                if (job==last_job) last_job=prev;
         }
 
         /* Freedir counts references */
@@ -90,106 +81,7 @@ int free_job(Job *job)
         return ret;
 }
 
-/* Threaded directory scan:
- * - if we know nothing of the directory scan it in this thread
- * - If it is already waiting in queue scan it in this thread.
- * - If it is already being scanned by another thread, wait for it.
- * - If it has been already scanned by another thread use the result.
- * - Launch directory scan jobs for subdirectories found.
- */
-Directory *pre_scan_directory(Directory *parent, Entry *dir)
-{
-        Directory *result = NULL;
-        int i;
-
-        /* Mutex to handle jobs */
-        pthread_mutex_lock(&mut);
-
-        assert(dir);
-        assert(!dir->job || dir->job->magick == 0x10b10b);
-
-        Job *d = dir->job;
-        if (dir->job && (dir->job->state==SCAN_WAITING || dir->job->state==SCAN_RUNNING || dir->job->state==SCAN_READY)) {
-                /* We have a prescan job */
-                switch (d->state) {
-                case SCAN_WAITING:
-                        /* The job for this directory has not started yet. Run it ourselves */
-                        scans.pre_scan_misses++;
-                        run_one_job(d);
-                        break;
-                case SCAN_RUNNING:
-                        /* Scan had already started. Wait for the scanning thread to finish */
-                        scans.pre_scan_wait_hits++;
-                        while (d->state != SCAN_READY)
-                        {
-                                run_any_job(); /* Run any job while waiting */
-                        }
-                        break;
-                case SCAN_READY:
-                        /* The scan has finished */
-                        scans.pre_scan_hits++;
-                        break;
-                default: assert(0);
-                }
-                scans.pre_scan_used++;
-                result = d->result;
-                free_job(dir->job);
-                assert(!dir->job || dir->job->magick == 0x10b10b);
-
-                pthread_cond_broadcast(&cond); /* wake up anyone who was waiting for this */
-        } else scans.pre_scan_misses++; // No prescan job was running. 
-
-        if (!result) {
-                set_thread_status(file_path(parent, dir->name), "scanning dir");
-                /* The directory was not in queue. Scan it in this thread */
-                pthread_mutex_unlock(&mut); /* Do not lock the critical section during IO or scan_directory */
-                result = scan_directory(parent, dir);
-                pthread_mutex_lock(&mut);
-        }
-        if (!result) {
-                show_error_dir("Failed to scan a directory", parent, dir->name);
-                goto out;
-        }
-
-        /* Now add the newly found directories to the job queue for pre scan */
-        for (i = result->entries - 1; i >= 0; i--)
-        {
-                if (S_ISDIR(result->array[i].stat.st_mode))
-                {
-                        if (result->array[i].job)
-                        {
-                                scans.pre_scan_too_late++;
-                                /* Already has a job, skip it */
-                                continue;
-                        }
-                        Job *d = my_calloc(1, sizeof(*d));
-                        d->magick = 0x10b10b;
-                        d->fentry = &result->array[i];
-                        result->array[i].job = d; /* Link the entry to the job */
-                        d->from = result;
-                        d->result = NULL;
-                        d->state = SCAN_WAITING;
-                        d->callback = NULL;
-                        d->next = pre_scan_list;
-                        pre_scan_list = d;
-                        dir_claim(result); /* The directory is now referenced by the Job */
-                        scans.pre_scan_allocated++;
-                        scans.queued++;
-                        scans.jobs++;
-                        if (scans.queued > scans.maxjobs)
-                                scans.maxjobs = scans.queued;
-                }
-        }
-        dir->state=ENTRY_SCAN_READY;
-
-out:
-        pthread_cond_broadcast(&cond);
-        pthread_mutex_unlock(&mut);
-
-        assert(!result || result->ref>0);
-        return result;
-}
-
+#if 0
 // Checks if the WaitQueue job should be run and add it to the global queue if yes
 void job_check_wait_queue(Job *wj)
 {
@@ -209,19 +101,18 @@ void job_check_wait_queue(Job *wj)
                 //printf("wait queue job %s (%p) scheduled \n", file_path(wj->from, wj->fentry->name), wj);
                 wj->next = pre_scan_list;
                 pre_scan_list = wj;
-                wj->fentry->wait_queue = NULL;
                 scans.wait_queued--;
                 scans.queued++;
                 return;
         } else {
-#if 0
+
                  printf("wait queue %ld job %s (%p) waiting for %s (%p) state=%d\n", wj->offset,
                         file_path(wj->from, wj->fentry->name), wj,  
                         file_path(i->from, i->fentry->name), i->fentry, i->state);
-#endif
                 return;
         }
 }
+#endif
 
 
 /* Runs one job: can be called by a thread when waiting jobs to finish.
@@ -231,7 +122,7 @@ JobResult run_one_job(Job *j)
 {
         assert(j && j->magick == 0x10b10b);
         Entry *fentry=j->fentry;
-        Entry *parent_entry=(j->from) ? j->from->parent_entry : NULL;
+        //Entry *parent_entry=(j->from) ? j->from->parent_entry : NULL;
         
         switch (j->state)
         {
@@ -287,8 +178,14 @@ JobResult run_any_job()
 {
         Job *j=pre_scan_list;
         while(j && j->state==SCAN_READY) j=j->next; // Skip ready jobs to find first runnable job
-        if (j && (j->state == SCAN_WAITING || j->state == JOB_WAITING) )
-                return run_one_job(j); // First runnable job is done waiting for others
+        for(; j && j->offset==DSYNC_FILE_WAIT ; j=j->next) {
+                if (j->state == JOB_WAITING)
+                        return run_one_job(j); // First runnable file waiting job is done waiting for others
+        }
+        for(; j && j->offset==DSYNC_DIR_WAIT ; j=j->next) {
+                if (j->state == JOB_WAITING)
+                        return run_one_job(j); // First runnable directory waiting job is done waiting for others
+        }
         for (; j; j=j->next) {
                 if ( (j->state == SCAN_WAITING || j->state == JOB_WAITING) &&
                         j->offset!=DSYNC_FILE_WAIT && j->offset!=DSYNC_DIR_WAIT )
@@ -362,10 +259,8 @@ void *job_queue_loop(void *arg)
         /* Never return */
 }
 
-/* Submit a job:
- * Add it first to the job queue, so that we run jobs depth first.
- * Depth fist lets us close open directories earlier and save file descriptors.
- */
+// Submit a job as last in in its own fentry or global last
+// Fentry and global lists form a single list of jobs.
 Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback)
 {
         assert(fentry);
@@ -387,23 +282,25 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
                 dir_claim(job->from);
         if (job->to)
                 dir_claim(job->to);
-        if (fentry->job)
+
+        if (pre_scan_list==NULL) pre_scan_list=last_job=job;
+#if 0
+        else if (fentry->last_job)
         {
                 /* Put it last to its own Entry queue */
-                Job *prev = fentry->job;
-                while (prev->next && prev->next->fentry == fentry)
-                        prev = prev->next;
-                job->next = prev->next;
-                prev->next = job;
+                job->next=fentry->last_job->next;
+                fentry->last_job->next=job;
+                fentry->last_job=job;
+                if (last_job->next==job) last_job=job;
         }
+#endif
         else
         {
-                /* If there was not a fentry queue, put it to global queue, to run jobs depth first */
-                job->next = pre_scan_list;
-                pre_scan_list = job;
-                fentry->job = job;
+                /* If there was not a fentry queue, put it last to global queue */
+                if (last_job) last_job->next=job;
+                last_job=job;
         }
-        // for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
+        //for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
         //      assert(queue_job->magick == 0x10b10b);
 
 

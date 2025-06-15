@@ -45,9 +45,9 @@ typedef struct {
         char *name;
         struct stat stat;
         char *link;
-        int error;                     /* If there was a IO error with stat() */
-        struct JobStruct *job;         /* If this entry has a job associated to it */
-        struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
+        int error;                          /* If there was a IO error with stat() */
+        struct JobStruct *last_job;         /* Last queued job associated with this entry  */
+        //struct JobStruct *wait_queue;  /* Jobs waiting for this entry to be done */
         struct DirectoryStruct *dir;
 } Entry;
 
