@@ -344,8 +344,8 @@ static void print_scans(const Scans *scans) {
     if (scans->read_directory_jobs) {
 	printf("%8d read directory jobs queued\n",scans->read_directory_jobs);
     }
-    if (scans->read_directory_hits) {
-	printf("%8d read directory hits\n",scans->read_directory_hits);
+    if (scans->read_directory_miss) {
+	printf("%8d read directory misses\n",scans->read_directory_miss);
     }
     if (scans->pre_scan_hits) {
 	printf("%8d directory prescan hits\n",scans->pre_scan_hits);

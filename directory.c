@@ -324,13 +324,15 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 case ENTRY_SCAN_QUEUE:
                 case ENTRY_SCAN_RUNNING:
                 case ENTRY_SCAN_READY:
-                        atomic_fetch_add(&scans.read_directory_hits,1);
                         goto out; // Already done 
                 case ENTRY_FAILED: goto out;     // IO error happened. Don't retry.
                 case ENTRY_DELETED: goto out;    // Deleted already
         }
 
-        // We won the race and get to read the directory
+        // This thread won the race and really reads the directory.
+        // If it was called with depth=0 it was a pre read_directory miss
+        if (depth==0) atomic_fetch_add(&scans.read_directory_miss,1);
+
         set_thread_status(file_path(parent,name),"readdir");
         Directory *nd=my_calloc(1, sizeof(Directory));
         parent_entry->dir=nd; // will be filled when we finish
@@ -399,7 +401,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
                         if ( S_ISDIR(e->stat.st_mode) ) {
                                 e->state=ENTRY_READ_QUEUE;
-                                if (e->stat.st_nlink==2 || depth<2) {
+                                if (e->stat.st_nlink==2) {
                                         submit_job(nd, e, NULL, e->name, depth+1, read_directory);
                                         atomic_fetch_add(&scans.read_directory_jobs,1);
                                 }
@@ -493,7 +495,7 @@ Directory *pre_scan_directory(Directory *parent, Entry *dir) {
 
         return scan_directory(parent,dir);
 }
-#if 0        
+#if 0
 {
         Directory *result = NULL;
         int i;

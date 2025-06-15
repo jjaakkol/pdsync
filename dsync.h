@@ -77,7 +77,7 @@ typedef struct {
     atomic_int files_synced;
 
     atomic_int read_directory_jobs;
-    atomic_int read_directory_hits;
+    atomic_int read_directory_miss;
     
     int pre_scan_hits;
     int pre_scan_wait_hits;
