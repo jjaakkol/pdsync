@@ -393,9 +393,9 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         if (parent) dir_claim(parent); /* Parent is referenced by this dir */
 
         /* Init the entry array for Directories and submit jobs */
-        for (int i = 0; recursive && i < entries; i++) {
+        for (int i = 0; i < entries; i++) {
                 nd->array[i].name=dents[i].name;
-                if (dents[i].d_type==DT_DIR) {
+                if (recursive && dents[i].d_type==DT_DIR) {
                         Entry *e=&nd->array[i];
                         init_entry(e, dfd, e->name);
                         //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
