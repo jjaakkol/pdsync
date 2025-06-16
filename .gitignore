@@ -1,3 +1,4 @@
 pdsync
 *.o
 .vscode/
+dsync-test/
