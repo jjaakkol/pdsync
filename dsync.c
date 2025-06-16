@@ -68,10 +68,11 @@ typedef struct {
     struct timespec start_clock_boottime;
     int dirs_created;
     int files_copied;
+    atomic_int files_updated;
     int entries_removed;
     int dirs_removed;
-    long long bytes_copied;
-    long long sparse_bytes;
+    atomic_llong bytes_copied;
+    atomic_llong sparse_bytes;
     int symlinks_created;
     int sockets_created;
     int fifos_created;
@@ -553,43 +554,54 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
 
 // Copy a file, preserving sparseness by punching holes using fallocate and mmap() I/O
 int copy_regular_sparse(int fd_in, int fd_out, off_t filesize, off_t offset) {
-        const size_t chunk_size = 16 * 1024 * 1024; // 1MB
+        const size_t chunk_size = 64 * 1024 * 1024;
         const size_t min_hole = 128*1024*1024; /* zfs default record size */
         size_t written=0;
         size_t this_chunk = (filesize - offset > chunk_size) ? chunk_size : (size_t)(filesize - offset);
         char *dst=NULL;
 
         // mmap input
-        char *src = mmap(NULL, this_chunk, PROT_READ, MAP_PRIVATE|MAP_POPULATE, fd_in, offset);
+        char *src = mmap(NULL, this_chunk, PROT_READ, MAP_SHARED | MAP_NONBLOCK | MAP_POPULATE, fd_in, offset);
         if (src == MAP_FAILED) {
                 perror("mmap() src");
                 goto fail; 
         }
 
         // mmap output
-        dst = mmap(NULL, this_chunk, PROT_WRITE|PROT_WRITE, MAP_SHARED|MAP_POPULATE, fd_out, offset);
+        dst = mmap(NULL, this_chunk, PROT_WRITE|PROT_WRITE, MAP_SHARED|MAP_NONBLOCK|MAP_POPULATE, fd_out, offset);
         if (dst == MAP_FAILED) {
                 perror("mmap() dst");
-                abort();
                 goto fail;
         }
 
-        while (written<chunk_size && written+offset < filesize) {
-                // Check if the chunk contains zeros
-                size_t i=written;
-                while(preserve_sparse && i<this_chunk && src[i]==0) i++;
-                if (i>min_hole) {
-                        // Attempt to punch a parse hole
-                        if (fallocate(fd_out, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, i) < 0) {
+        // Loop our chunk_size through in min_hole sized attempts at hole punching 
+        while (written<this_chunk) {
+                size_t i=0;
+
+                // find the zero bytes and attempto to punch as large hole as we can
+                while(preserve_sparse && i+written<this_chunk && src[i+written]==0) i++;
+                if (i>=4096) {
+                        if (fallocate(fd_out, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset+written, i) < 0) {
                                 fprintf(stderr,"fallocate(%ld): %s", i, strerror(errno));
-                        } else {
                                 memset(dst+written, 0, i);
+                        } else {
+                                atomic_fetch_add(&opers.sparse_bytes,i);
                         }
                 } else i=0;
-                int w = min_hole - i;
-                if (written+w > this_chunk) w=this_chunk-written;
-                memcpy(dst+written+i, src+written+i, w);
-                written += w;
+
+                // Find next hole point
+                size_t next_hole_point = i+min_hole - (i%min_hole);
+
+                // If it is past the EOF adjust
+                if (written+next_hole_point > this_chunk) next_hole_point=this_chunk-written;
+
+                // Then find bytes which are already equal, until next hole point
+                while(i<next_hole_point && src[i+written]==dst[i+written]) i++;
+
+                // Copy the rest of the bytes which aren't zero and aren't equal 
+                memcpy(dst+written+i, src+written+i, next_hole_point-i);
+                written=next_hole_point;
+                atomic_fetch_add(&opers.bytes_copied, next_hole_point-i);
         }
 
         fail: 
@@ -605,7 +617,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         struct stat from_stat;
         int sparse_copy=0;
         int ret=0;
-        off_t copy_job_size=16*1024*1024;
+        off_t copy_job_size=64*1024*1024;
         int num_jobs=0;
         char buf[32];
 
@@ -650,10 +662,13 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
 	        sparse_copy=preserve_sparse;
 
-                // Ensure output file is large enough
-                if (ftruncate(tofd, from_stat.st_size) < 0) {
-                        write_error("ftruncate", to, target);
-                        goto fail;
+                // Truncate the file to the desired size, except if we know it already is right size
+                Entry *tentry=directory_lookup(to, target);
+                if (!tentry || tentry->stat.st_size!=from_stat.st_size) {
+                        if (ftruncate(tofd, from_stat.st_size) < 0) {
+                                write_error("ftruncate", to, target);
+                                goto fail;
+                        }
                 }
                 if (from_stat.st_size==0) goto end; 
 
@@ -1184,7 +1199,11 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 	    if (entry_changed(fentry,tentry)) {
 		if (!S_ISDIR(fentry->stat.st_mode) || 
 		    !S_ISDIR(tentry->stat.st_mode)) {
-		    if (delete || !S_ISDIR(tentry->stat.st_mode)) {
+                    if ( S_ISREG(fentry->stat.st_mode) && S_ISREG(tentry->stat.st_mode) ) {
+                        // Try to keep existing file.
+                        atomic_fetch_add(&opers.files_updated,1);
+                        item("KEEP", to, tentry->name );
+                    } else if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			/* Entry exists, but it is OK to remove it */
 			remove_entry(to, tentry);
 		    } else {
