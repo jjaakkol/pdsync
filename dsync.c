@@ -566,6 +566,8 @@ int copy_regular_sparse(int fd_in, int fd_out, off_t filesize, off_t offset) {
                 perror("mmap() src");
                 goto fail; 
         }
+        if (madvise(src, this_chunk, MADV_SEQUENTIAL)<0) perror("madvice src");
+        if (madvise(src, this_chunk, MADV_WILLNEED)<0) perror("madvice src");
 
         // mmap output
         dst = mmap(NULL, this_chunk, PROT_WRITE|PROT_WRITE, MAP_SHARED|MAP_NONBLOCK|MAP_POPULATE, fd_out, offset);
@@ -573,6 +575,8 @@ int copy_regular_sparse(int fd_in, int fd_out, off_t filesize, off_t offset) {
                 perror("mmap() dst");
                 goto fail;
         }
+        if (madvise(src, this_chunk, MADV_SEQUENTIAL)<0) perror("madvice src");
+        if (madvise(src, this_chunk, MADV_WILLNEED)<0) perror("madvice src");
 
         // Loop our chunk_size through in min_hole sized attempts at hole punching 
         while (written<this_chunk) {
