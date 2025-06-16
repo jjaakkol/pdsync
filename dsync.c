@@ -17,6 +17,7 @@
  */
 
 #include "dsync.h"
+#include <sys/mman.h>
 
 #define VERSIONNUM "1.9"
 #define VERSION VERSIONNUM "-" MODTIME
@@ -548,7 +549,54 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
         write_error("remove_hierarchy", del, tentry->name);
         ret=-1;
         goto cleanup;
-}    
+}
+
+// Copy a file, preserving sparseness by punching holes using fallocate and mmap() I/O
+int copy_regular_sparse(int fd_in, int fd_out, off_t filesize, off_t offset) {
+        const size_t chunk_size = 16 * 1024 * 1024; // 1MB
+        const size_t min_hole = 128*1024*1024; /* zfs default record size */
+        size_t written=0;
+        size_t this_chunk = (filesize - offset > chunk_size) ? chunk_size : (size_t)(filesize - offset);
+        char *dst=NULL;
+
+        // mmap input
+        char *src = mmap(NULL, this_chunk, PROT_READ, MAP_PRIVATE|MAP_POPULATE, fd_in, offset);
+        if (src == MAP_FAILED) {
+                perror("mmap() src");
+                goto fail; 
+        }
+
+        // mmap output
+        dst = mmap(NULL, this_chunk, PROT_WRITE|PROT_WRITE, MAP_SHARED|MAP_POPULATE, fd_out, offset);
+        if (dst == MAP_FAILED) {
+                perror("mmap() dst");
+                abort();
+                goto fail;
+        }
+
+        while (written<chunk_size && written+offset < filesize) {
+                // Check if the chunk contains zeros
+                size_t i=written;
+                while(preserve_sparse && i<this_chunk && src[i]==0) i++;
+                if (i>min_hole) {
+                        // Attempt to punch a parse hole
+                        if (fallocate(fd_out, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, i) < 0) {
+                                fprintf(stderr,"fallocate(%ld): %s", i, strerror(errno));
+                        } else {
+                                memset(dst+written, 0, i);
+                        }
+                } else i=0;
+                int w = min_hole - i;
+                if (written+w > this_chunk) w=this_chunk-written;
+                memcpy(dst+written+i, src+written+i, w);
+                written += w;
+        }
+
+        fail: 
+        if (src) munmap(src, this_chunk);
+        if (dst) munmap(dst, this_chunk);
+        return 0;
+}
 
 int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int fromfd=-1;
@@ -565,9 +613,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         const char *source=fentry->name;
         assert(source && target);
 
-        snprintf(buf,sizeof(buf)-1,"copy %ld", offset/copy_job_size);
-        set_thread_status(file_path(to,target),buf);
-
         int from_dfd = dir_open(from);
         fromfd=openat(from_dfd, source, O_RDONLY|O_NOFOLLOW);
         if (fromfd<0 || fstat(fromfd,&from_stat)) {
@@ -580,7 +625,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 goto end;
         }
         to_dfd = dir_open(to);
-        tofd=openat(to_dfd, target, O_WRONLY|O_CREAT|O_NOFOLLOW, 0666);
+        tofd=openat(to_dfd, target, O_RDWR|O_CREAT|O_NOFOLLOW, 0666); // mmap() IO needs RDWR access
         if(tofd<0) {
                 write_error("open", to, target);
                 goto fail;
@@ -588,6 +633,8 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
+                set_thread_status(file_path(to,target),"ftruncate");
+
                 // The target file has been created with previous openat()
                 item("CP",to,target); // FIXME: do this only when all jobs have actually finished.
                 opers.files_copied++;
@@ -603,7 +650,13 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
 	        sparse_copy=preserve_sparse;
 
-                // TODO: could ftruncate here */
+                // Ensure output file is large enough
+                if (ftruncate(tofd, from_stat.st_size) < 0) {
+                        write_error("ftruncate", to, target);
+                        goto fail;
+                }
+                if (from_stat.st_size==0) goto end; 
+
 
                 /* Submit the actual copy jobs */
                 num_jobs=from_stat.st_size/copy_job_size+1;
@@ -614,46 +667,14 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
 
-        if (sparse_copy) {
-	        // TODO: fix this.
-                /* Copy loop which handles sparse blocks */
-	        char *spbuf=NULL;
-	        int bsize=4096; // 4096 is the default size of many fs blocks
-                int r;
+        if (sparse_copy || update_all) {
+                snprintf(buf,sizeof(buf)-1,"update %ld", offset/copy_job_size);
+                set_thread_status(file_path(to,target),buf);
 
-        	spbuf=my_malloc(bsize);
-	
-                /* Read and skip blocks with only zeros */
-	        while( (r=read(fromfd,spbuf,bsize)) > 0 ) {
-	                int written=0;
-	                while(written<r && spbuf[written]==0) written++;
-	                if (written==bsize) {
-		        /* Found a block of zeros */
-		        if (lseek(tofd,bsize,SEEK_CUR)<0) {
-                                write_error("lseek", to, target);
-                                goto fail;
-		        }
-		        opers.sparse_bytes+=written;
-	        } else {
-		        written=0;
-	        }
-	        while (written<r) {
-		        int w=write(tofd,spbuf+written,r-written);
-		        if (w<0) {
-                                write_error("write", to, target);
-                                goto fail;
-		        }
-		        written+=w;
-		        opers.bytes_copied+=w;
-	        }
-	}
-	free(spbuf);
-        if (r<0) {
-            show_error_dir("read", from, source);
-            goto fail;
-        }
-	
+                copy_regular_sparse(fromfd, tofd, from_stat.st_size, offset);
         } else {
+                snprintf(buf,sizeof(buf)-1,"sendfile %ld", offset/copy_job_size);
+                set_thread_status(file_path(to,target),buf);
 	        /* Simple loop with no regard to filesystem block size or sparse blocks*/
                 int w=0;
                 if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
@@ -673,6 +694,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         end:
         snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
+        set_thread_status(file_path(to,target),buf);
         if (fromfd>=0) close(fromfd);
         if (from_dfd>=0) dir_close(from);
         if (tofd>=0) close(tofd);
