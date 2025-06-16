@@ -574,6 +574,11 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 show_error_dir("open", from, source);
                 goto fail; 
         }
+        if (dryrun) {
+                item("CP",to,target);
+                opers.bytes_copied+=from_stat.st_size;
+                goto end;
+        }
         to_dfd = dir_open(to);
         tofd=openat(to_dfd, target, O_WRONLY|O_CREAT|O_NOFOLLOW, 0666);
         if(tofd<0) {
@@ -583,9 +588,8 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
-                /* Start the copy jobs from here, and do the first one ourselves  */
-
-                item("CP",to,target);
+                // The target file has been created with previous openat()
+                item("CP",to,target); // FIXME: do this only when all jobs have actually finished.
                 opers.files_copied++;
 
                 /* Check for sparse file */
@@ -599,19 +603,14 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
 	        sparse_copy=preserve_sparse;
 
-                if (dryrun) {
-	                opers.bytes_copied+=from_stat.st_size;
-                        return 0;
-                }
-
                 // TODO: could ftruncate here */
 
-                /* If the file is large submit the rest of the copy jobs */
+                /* Submit the actual copy jobs */
                 num_jobs=from_stat.st_size/copy_job_size+1;
-                for (int i=1; i<num_jobs; i++) {
+                for (int i=0; i<num_jobs; i++) {
                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                 }
-                offset=0;
+                goto end;
         }
 
 
@@ -1053,7 +1052,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
-                        submit_job(from, fentry, to, target, DSYNC_DIR_WAIT, dsync);
+                        submit_job(from, fentry, to, target, 0, dsync);
                         goto out;
 	        }
     
@@ -1195,9 +1194,9 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 		}
 	    }
 
-            /* Create the target in a different Job */
-            /* FIXME: this might actually be slower, since the threads are competing for directory lock */
-            submit_job(from, fentry, to, fentry->name, i, create_target);
+            /* We could create the target in a different job, but I measured this to be faster */
+            //submit_job(from, fentry, to, fentry->name, i, create_target);
+            create_target(from, fentry, to, fentry->name, i);
 
 	    /* Save paths to entries having link count > 1 
 	     * for making hard links */

@@ -158,6 +158,7 @@ JobResult run_any_job()
         scans.idle_threads++;
         pthread_cond_wait(&cond, &mut);
         scans.idle_threads--;
+        mark_job_start(NULL, "idle done");
         return RET_NONE;
 #if 0
         static _Thread_local JobCallback *last_job=NULL;
