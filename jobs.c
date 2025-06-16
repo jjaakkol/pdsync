@@ -137,6 +137,7 @@ JobResult run_one_job(Job *j)
  */
 JobResult run_any_job()
 {
+        mark_job_start(NULL,"select job");
         Job *j=pre_scan_list;
         while(j && j->state==SCAN_READY) j=j->next; // Skip ready jobs to find first runnable job
         for(; j && j->offset==DSYNC_FILE_WAIT ; j=j->next) {
