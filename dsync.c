@@ -553,8 +553,9 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
 }
 
 // Copy a file, preserving sparseness by punching holes using fallocate and mmap() I/O
-int copy_regular_sparse(int fd_in, int fd_out, off_t filesize, off_t offset) {
-        const size_t chunk_size = 64 * 1024 * 1024;
+// Turns out this is really slow, at least with zfs.
+int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
+        const size_t chunk_size = 16 * 1024 * 1024;
         const size_t min_hole = 128*1024*1024; /* zfs default record size */
         size_t written=0;
         size_t this_chunk = (filesize - offset > chunk_size) ? chunk_size : (size_t)(filesize - offset);
@@ -621,7 +622,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         struct stat from_stat;
         int sparse_copy=0;
         int ret=0;
-        off_t copy_job_size=64*1024*1024;
+        off_t copy_job_size=16*1024*1024;
         int num_jobs=0;
         char buf[32];
 
@@ -686,24 +687,52 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
 
-        if (sparse_copy || update_all) {
+        if (0 && (sparse_copy || update_all)) {
                 snprintf(buf,sizeof(buf)-1,"update %ld", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
 
-                copy_regular_sparse(fromfd, tofd, from_stat.st_size, offset);
+                copy_regular_mmap(fromfd, tofd, from_stat.st_size, offset);
         } else {
                 snprintf(buf,sizeof(buf)-1,"sendfile %ld", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
-	        /* Simple loop with no regard to filesystem block size or sparse blocks*/
+
+	        // Simple loop with option to seek a hole and punch hole to target
                 int w=0;
                 if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
                         write_error("lseek", to, target);
                         goto fail;
                 }
-                off_t towrite=copy_job_size;
-                while(towrite>0 && (w=sendfile(tofd,fromfd,NULL,towrite))>0) {
-                        opers.bytes_copied+=w;
-                        towrite-=w;
+                off_t written=0;
+                off_t to_copy=(offset + copy_job_size > from_stat.st_size) ? from_stat.st_size-offset : copy_job_size;
+                while(written<to_copy) {
+                        off_t chunk=to_copy-written;
+
+                        // If sparse_copy check for holes
+                        if (sparse_copy) {
+                                off_t hole=lseek(fromfd, offset+written, SEEK_HOLE);
+                                if (hole==offset+written) {
+                                        // Found a hole. Punch a hole to target
+                                        off_t data=lseek(fromfd, hole, SEEK_DATA);
+                                        w=data-hole; 
+                                        if (fallocate(tofd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, w)<0) {
+                                                fprintf(stderr,"fallocate(FALLOC_PUNCH_HOLE,%d): %s", w, strerror(errno));
+                                        } else {
+                                                // Need to write zero's to target
+                                        }
+                                        atomic_fetch_add(&opers.sparse_bytes, w);
+                                        written+=w;
+                                        lseek(tofd, offset+written, SEEK_SET);
+                                }
+                                // Move pointer back to the data and count the next copy chunk size
+                                lseek(fromfd, offset+written, SEEK_SET);
+                                chunk=hole-(offset+written);
+                                if (written+chunk > to_copy) chunk=to_copy-written; 
+                        } 
+                        // Just copy the data 
+                        if ( (w=sendfile(tofd,fromfd,NULL,chunk) )>0) {
+                                atomic_fetch_add(&opers.bytes_copied,w);
+                                written+=w;
+                        }
                 }
 	        if (w<0) {
                         write_error("write", to, target);
