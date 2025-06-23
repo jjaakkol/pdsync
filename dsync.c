@@ -656,7 +656,7 @@ int copy_regular_rw(int fd_in, int fd_out, off_t filesize, off_t offset) {
                         w+=ret;
                 }
                 written+=r;
-                atomic_fetch_add(&opers.bytes_copied, written);
+                atomic_fetch_add(&opers.bytes_copied, w);
         }
 
         return 0; 
