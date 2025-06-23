@@ -453,7 +453,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
         while(read_directory(parent, entry, NULL, entry->name, 0)==RET_RUNNING) {
                 job_lock();
-                run_any_job();
+                if (entry->state==ENTRY_READING) run_any_job();
                 job_unlock();
         }
         if (entry->state==ENTRY_FAILED) return NULL;
