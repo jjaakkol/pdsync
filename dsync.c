@@ -615,6 +615,58 @@ int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
         return 0;
 }
 
+// Copy file simply with regular read/write
+int copy_regular_rw(int fd_in, int fd_out, off_t filesize, off_t offset) {
+        const size_t copy_job_size = 16 * 1024 * 1024;
+        const size_t bufsize=1*1024*1024;
+        size_t this_chunk = (filesize - offset > copy_job_size) ? copy_job_size : (size_t)(filesize - offset);
+        static _Thread_local char *buf=NULL;
+        if (buf==NULL) buf=my_malloc(bufsize);
+
+        if (lseek(fd_in, offset, SEEK_SET)!=offset) goto fail;
+        if (lseek(fd_out, offset, SEEK_SET)!=offset) goto fail;
+
+        // Loop through our chunk in bufsize rw 
+        for(size_t written=0; written<this_chunk; ) {
+
+                size_t r=read(fd_in, buf, bufsize);
+                if (r<0) {
+                        fprintf(stderr, "read(): %s\n", strerror(errno));
+                        goto fail;
+                }
+                if (r==0) goto fail; // we got an EOF on our chunk
+
+                if (update_all) {
+                        static _Thread_local char *wbuf=NULL;
+                        if (wbuf==NULL) wbuf=my_malloc(bufsize);
+                        if (read(fd_out, wbuf, r)==r && memcmp(buf, wbuf, r)==0) {
+                                // Identical bytes, we can skip the write
+                                //atomic_fetch_add(&scans.bytes_skipped, r);
+                                written+=r;
+                                continue;
+                        }
+                        if ( lseek(fd_out, offset+written, SEEK_SET) != offset+written ) goto fail;
+                }
+
+
+                size_t w=0;
+                while (w<r) {
+                        int ret=write(fd_out, buf+w, r-w);
+                        if (ret<0) {
+                                fprintf(stderr, "write(): %s\n", strerror(errno));
+                                goto fail;
+                        }
+                        w+=ret;
+                }
+                written+=r;
+                atomic_fetch_add(&opers.bytes_copied, written);
+        }
+
+        return 0; 
+        fail: 
+        return -1;
+}
+
 int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int fromfd=-1;
         int tofd=-1;
@@ -687,11 +739,11 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
 
-        if (0 && (sparse_copy || update_all)) {
+        if (update_all) {
                 snprintf(buf,sizeof(buf)-1,"update %ld", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
 
-                copy_regular_mmap(fromfd, tofd, from_stat.st_size, offset);
+                copy_regular_rw(fromfd, tofd, from_stat.st_size, offset);
         } else {
                 snprintf(buf,sizeof(buf)-1,"sendfile %ld", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
