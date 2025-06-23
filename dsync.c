@@ -562,11 +562,12 @@ int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
         size_t written=0;
         size_t this_chunk = (filesize - offset > chunk_size) ? chunk_size : (size_t)(filesize - offset);
         char *dst=NULL;
+        int ret=0;
 
         // mmap input
         char *src = mmap(NULL, this_chunk, PROT_READ, MAP_SHARED | MAP_NONBLOCK | MAP_POPULATE, fd_in, offset);
         if (src == MAP_FAILED) {
-                perror("mmap() src");
+                fprintf(stderr,"mmap(%ld, %ld)\n",this_chunk, offset);
                 goto fail; 
         }
         if (madvise(src, this_chunk, MADV_SEQUENTIAL)<0) perror("madvice src");
@@ -609,10 +610,13 @@ int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
                 written+=end_of_chunk;
         }
 
-        fail: 
+        out: 
         if (src) munmap(src, this_chunk);
         if (dst) munmap(dst, this_chunk);
-        return 0;
+        return ret;
+        fail:
+        ret=-1; 
+        goto out;
 }
 
 // Copy file simply with regular read/write
@@ -726,11 +730,9 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                                 goto fail;
                         }
                 }
-                if (from_stat.st_size==0) goto end; 
-
 
                 /* Submit the actual copy jobs */
-                num_jobs=from_stat.st_size/copy_job_size+1;
+                num_jobs = (from_stat.st_size + copy_job_size - 1) / copy_job_size;
                 for (int i=0; i<num_jobs; i++) {
                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                 }
@@ -742,7 +744,9 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 if (sparse_copy) {
                         snprintf(buf,sizeof(buf)-1,"update mmap %ld", offset/copy_job_size);
                         set_thread_status(file_path(to,target),buf);
-                        copy_regular_mmap(fromfd, tofd, from_stat.st_size, offset);
+                        if (copy_regular_mmap(fromfd, tofd, from_stat.st_size, offset)<0) {
+                                write_error("copy_regular_mmap", to, target);
+                        }
                 } else {
                         snprintf(buf,sizeof(buf)-1,"update rw %ld", offset/copy_job_size);
                         set_thread_status(file_path(to,target),buf);
