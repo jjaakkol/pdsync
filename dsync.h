@@ -72,6 +72,7 @@ typedef struct DirectoryStruct {
 typedef struct {
     atomic_int dirs_read;
     atomic_int entries_checked;
+    atomic_llong bytes_checked;
     int dirs_skipped;
     int files_skipped;
     atomic_int files_synced;

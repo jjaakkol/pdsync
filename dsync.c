@@ -406,8 +406,10 @@ static void print_opers(FILE *stream, const Opers *stats) {
                 stats->files_copied*1000000000.0/ns);
     }
     char buf[32];
-    fprintf(stream, "%8s data copied, ", format_bytes(stats->bytes_copied, buf));
-    fprintf(stream, "%s/s\n", format_bytes(stats->bytes_copied*1000000000.0/ns,buf));
+    fprintf(stream, "%8s bytes copied, ", format_bytes(stats->bytes_copied, buf));
+    fprintf(stream, "%s/s\n", format_bytes(stats->bytes_copied*1000000000.0/ns,buf));    
+    fprintf(stream, "%8s bytes checked, ", format_bytes(scans.bytes_checked, buf));
+    fprintf(stream, "%s/s\n", format_bytes(scans.bytes_checked*1000000000.0/ns,buf));
     if (stats->sparse_bytes) {
         fprintf(stream, "%8s data in sparse blocks\n", format_bytes(stats->sparse_bytes, buf));
     }
@@ -603,6 +605,7 @@ int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
                 // Copy the rest of the bytes which aren't zero and aren't equal 
                 memcpy(dst+written+i, src+written+i, end_of_chunk-i);
                 atomic_fetch_add(&opers.bytes_copied, end_of_chunk-i);
+                atomic_fetch_add(&scans.bytes_checked, end_of_chunk);
                 written+=end_of_chunk;
         }
 
@@ -640,6 +643,7 @@ int copy_regular_rw(int fd_in, int fd_out, off_t filesize, off_t offset) {
                                 // Identical bytes, we can skip the write
                                 //atomic_fetch_add(&scans.bytes_skipped, r);
                                 written+=r;
+                                atomic_fetch_add(&scans.bytes_checked, r);
                                 continue;
                         }
                         if ( lseek(fd_out, offset+written, SEEK_SET) != offset+written ) goto fail;
