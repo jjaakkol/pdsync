@@ -18,6 +18,7 @@
 
 #include "dsync.h"
 #include <sys/mman.h>
+#include <sys/xattr.h>
 
 #define VERSIONNUM "1.9"
 #define VERSION VERSIONNUM "-" MODTIME
@@ -46,6 +47,9 @@ int privacy=0;
 int progress=0;
 static int threads=4;
 uid_t myuid=0;
+const char *sync_tag=NULL;
+const char *sync_tag_name="user.pdsync";
+
 
 FILE *tty_stream=NULL; /* For --progress */
 
@@ -101,9 +105,15 @@ typedef struct LinkStruct {
 static Link **link_htable=NULL;
 static int hash_size=1009;
 
-enum { ATIME_PRESERVE=255, PRIVACY=256, DELETE_ONLY=257,
-       THREADS=258
+enum { 
+        ATIME_PRESERVE=255, 
+        PRIVACY=256, 
+        DELETE_ONLY=257,
+        THREADS=258,
+        SYNC_TAG=259,
+        SYNC_TAG_NAME=260
 };
+
 
 static struct option options[]= {
     { "dry-run",         0, NULL, 'n' },
@@ -130,6 +140,8 @@ static struct option options[]= {
     { "privacy",         0, NULL, PRIVACY },
     { "delete-only",     0, NULL, DELETE_ONLY },
     { "threads",         1, NULL, THREADS },
+    { "sync-tag",        1, NULL, SYNC_TAG },
+    { "sync-tag-name",   1, NULL, SYNC_TAG_NAME },
     { NULL, 0, NULL, 0 }       
 };
 
@@ -269,6 +281,8 @@ static int parse_options(int argc, char *argv[]) {
                         }
                         break;
                 }
+        case SYNC_TAG_NAME: sync_tag_name=optarg; break;
+        case SYNC_TAG: sync_tag=optarg; break;
 	case 'a': 
 	    recursive=1;
 	    preserve_permissions=1;
@@ -1079,11 +1093,11 @@ JobResult sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, co
                 gid=fentry->stat.st_gid;
         }
         if (uid!=-1 || gid!=-1) {
-                if (!dryrun && fchownat(dfd, fentry->name, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
-                        write_error("fchownat", to, fentry->name);
+                if (!dryrun && fchownat(dfd, target, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
+                        write_error("fchownat", to, target);
                         ret=-1;
                 } else {
-                        if (itemize>1) item("CO",to,fentry->name);
+                        if (itemize>1) item("CO", to, target);
                         opers.chown++;
                 }
         }
@@ -1092,11 +1106,11 @@ JobResult sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, co
         if (preserve_permissions && 
                 !S_ISLNK(fentry->stat.st_mode) &&
                 fentry->stat.st_mode!=to_stat.st_mode) {
-                if (!dryrun && fchmodat(dfd, fentry->name, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
-                        write_error("fchmodat", to, fentry->name);
+                if (!dryrun && fchmodat(dfd, target, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
+                        write_error("fchmodat", to, target);
                         ret=-1;
                 } else {
-                        if (itemize>2) item("CH",to,fentry->name);
+                        if (itemize>2) item("CH", to, target);
                         opers.chmod++;
                 }
         }
@@ -1120,14 +1134,30 @@ JobResult sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, co
                         to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
                 ) {
                         /* skip, times were right */
-                } else if (!dryrun && utimensat(dfd, fentry->name, tmp, AT_SYMLINK_NOFOLLOW)<0) {
-                        write_error("utimensat", to, fentry->name);
+                } else if (!dryrun && utimensat(dfd, target, tmp, AT_SYMLINK_NOFOLLOW)<0) {
+                        write_error("utimensat", to, target);
                         ret=-1;
                 } else {
-                        if (itemize) item("TI", to, fentry->name);
+                        if (itemize) item("TI", to, target);
                         opers.times++;
                 }
         }
+
+        if (S_ISDIR(fentry->stat.st_mode) && sync_tag) {
+                if (!dryrun) {
+                        int fd=openat(dfd, target, O_RDONLY|O_DIRECTORY);
+                        if (fd<0) {
+                                fprintf(stderr,"open %s\n", strerror(errno));
+                                goto out;
+                        }
+                        if (fsetxattr(fd, sync_tag_name, sync_tag, strlen(sync_tag), 0)<0) {
+                                write_error("fsetxattr", to, target);
+                        }
+                        close(fd);
+                }
+                item("TAG", to, target);
+        }
+        
 
         out:
         dir_close(to);
@@ -1153,7 +1183,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        /* copy regular might submit jobs */
 	        copy_regular(from, fentry, to, target, -1);
                 /* We have a target to set the inode bits. We submit a job to set its bits */
-                submit_job(from, fentry, to, fentry->name, DSYNC_FILE_WAIT, sync_metadata);
+                submit_job(from, fentry, to, fentry->name, DSYNC_FILE_WAIT, sync_metadata); // FIXME: do this in copy regular 
                 goto out;
         }
         
@@ -1234,7 +1264,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         }
 
         /* If we did not start a Job, we can just update the metadata now, */
-        sync_metadata(from, fentry, to, fentry->name, depth);
+        sync_metadata(from, fentry, to, target, depth);
 
         int ret=0;
         out: 
@@ -1246,8 +1276,6 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 }
 
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {
-    int fromfd=-1;
-    int tofd=-1;
     Directory *from=NULL;
     Directory *to=NULL;
     int i;
@@ -1259,6 +1287,22 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 
     set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
     strncpy(todir,target,sizeof(todir)-1);
+
+    // Check if we have a already tagged directory and skip it.
+    if (sync_tag) {
+        int fd=dir_openat(to_parent, target);
+        if (fd>=0) {
+                char buf[256];
+                size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
+                if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
+                        item("TAGGED", to, target);
+                        scans.dirs_skipped++;
+                        close(fd);
+                        return 0;
+                }
+        }
+        close(fd);
+    }
 
     from=pre_scan_directory(from_parent, parent_fentry);
     if (from==NULL) {
@@ -1358,8 +1402,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 
     }
 
-        /* Job to set the direcoty metadata bits needs to wait for all create jobs to have finished */
-        submit_job(from_parent, parent_fentry, to_parent, parent_fentry->name, DSYNC_DIR_WAIT, sync_metadata);
+        /* Job to set the directory metadata bits needs to wait for all create jobs to have finished */
+        submit_job(from_parent, parent_fentry, to_parent, target, DSYNC_DIR_WAIT, sync_metadata);
 
     
     ret=0;
@@ -1369,8 +1413,6 @@ fail:
     set_thread_status(file_path(from_parent,parent_fentry->name), "sync done");
 
     if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
-    if (fromfd>=0) close(fromfd);
-    if (tofd>=0) close(tofd);
 
     if (from) d_freedir(from);
     if (to) d_freedir(to);
