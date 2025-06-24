@@ -593,7 +593,8 @@ int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
                 while(preserve_sparse && i<end_of_chunk && src[i+written]==0) i++;
                 if (i>=4096) {
                         if (fallocate(fd_out, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset+written, i) < 0) {
-                                fprintf(stderr,"fallocate(%ld): %s", i, strerror(errno));
+                                fprintf(stderr,"Disabling sparse files: fallocate(%ld): %s\n", i, strerror(errno));
+                                preserve_sparse=0;
                                 memset(dst+written, 0, i);
                         } else {
                                 atomic_fetch_add(&opers.sparse_bytes, i);
