@@ -681,7 +681,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         int sparse_copy=preserve_sparse; // FIXME: do we need this?
         int ret=0;
         off_t copy_job_size=16*1024*1024;
-        int num_jobs=0;
         char buf[32];
 
         assert(from && to && fentry);
@@ -706,13 +705,11 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 goto fail;
         }
 
+        int num_jobs= (from_stat.st_size + copy_job_size - 1) / copy_job_size;
+
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
                 set_thread_status(file_path(to,target),"ftruncate");
-
-                // The target file has been created with previous openat()
-                item("CP",to,target); // FIXME: do this only when all jobs have actually finished.
-                opers.files_copied++;
 
                 /* Check for sparse file */
                 if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
@@ -733,11 +730,21 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 }
 
                 /* Submit the actual copy jobs */
-                num_jobs = (from_stat.st_size + copy_job_size - 1) / copy_job_size;
-                for (int i=0; i<num_jobs; i++) {
-                        submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
+                if (from_stat.st_size==0) {
+                        goto end; // Zero size file, we are done
+                } else if (from_stat.st_size<=16*1024) {
+                        offset=0; // We have the file open and it is small. Copy it ourselves
+                } else {
+                        for (int i=0; i<num_jobs; i++) {
+                                // Optimization: if already have a long queue, don't go through submit and it's locks. 
+                                if (scans.idle_threads==0 && scans.queued > threads * 10) {
+                                        copy_regular(from, fentry, to, target, copy_job_size*i);
+                                } else {
+                                        submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
+                                }
+                        }
+                        goto end;
                 }
-                goto end;
         }
 
 
@@ -778,7 +785,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                                         if (fallocate(tofd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, w)<0) {
                                                 fprintf(stderr,"fallocate(FALLOC_PUNCH_HOLE,%d): %s", w, strerror(errno));
                                         } else {
-                                                // Need to write zero's to target
+                                                // FIXME: Need to write zero's to target
                                         }
                                         atomic_fetch_add(&opers.sparse_bytes, w);
                                         written+=w;
@@ -801,15 +808,22 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         	}
         }
 
+
+        if (offset/copy_job_size == num_jobs-1) {
+                // This is the last job
+                item("CP",to,target);
+                opers.files_copied++;
+        }
+
         end:
-        snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
-        set_thread_status(file_path(to,target),buf);
+        if (offset>=0) {
+                snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
+                set_thread_status(file_path(to,target),buf);
+        } else set_thread_status("copy submit", file_path(to,target));
         if (fromfd>=0) close(fromfd);
         if (from_dfd>=0) dir_close(from);
         if (tofd>=0) close(tofd);
         if (to_dfd>=0) dir_close(to);
-
-        set_thread_status(file_path(to,target),buf);
 
         return ret;
  fail:
@@ -1296,7 +1310,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
                     if ( S_ISREG(fentry->stat.st_mode) && S_ISREG(tentry->stat.st_mode) ) {
                         // Try to keep existing file.
                         atomic_fetch_add(&opers.files_updated,1);
-                        item("KEEP", to, tentry->name );
+                        if (itemize>1) item("KEEP", to, tentry->name );
                     } else if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			/* Entry exists, but it is OK to remove it */
 			remove_entry(to, tentry);
