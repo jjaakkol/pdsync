@@ -73,7 +73,7 @@ static void lru_close_one() {
         //printf("lru_close_one: tried %d, open %d\n",tried, open_dir_count);
 }
 
-/* Initialize a directory Entry. */
+/* Initialize a Entry when given a fd of open directory */
 Entry *init_entry(Entry *entry, int dfd, char *name)
 {
         memset(entry, 0, sizeof(*entry));
@@ -118,9 +118,9 @@ const char *dir_path(const Directory *d)
                 assert(d->magick==0xDADDAD);
                 dir_path(d->parent);
                 if (privacy && d->parent && d->parent->parent_entry &&
-                    d->parent->parent_entry->stat.st_uid != 0 && d->stat.st_uid != getuid())
+                    d->parent->parent_entry->stat.st_uid != 0 && dir_stat(d)->st_uid != getuid())
                 {
-                        len += snprintf(buf + len, MAXLEN - len, "[0x%lx]/", d->stat.st_ino);
+                        len += snprintf(buf + len, MAXLEN - len, "[0x%lx]/", dir_stat(d)->st_ino);
                 }
                 else
                 {
@@ -135,7 +135,7 @@ const char *dir_path(const Directory *d)
 const char *file_path(const Directory *d, const char *f)
 {
         _Thread_local static char buf[MAXLEN];
-        if (privacy && d && d->parent_entry && d->stat.st_uid != 0 && d->stat.st_uid != getuid())
+        if (privacy && d && d->parent_entry && dir_stat(d)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
         {
                 snprintf(buf, sizeof(buf), "%s%s", dir_path(d), "[PRIVACY]");
         }
@@ -233,8 +233,8 @@ static int dir_open_locked(Directory *d)
                 int fd = dir_openat_locked(d->parent, d->name);
                 struct stat s;
                 if (fd < 0 || fstat(fd, &s) < 0 ||
-                        s.st_ino != d->stat.st_ino ||
-                        s.st_dev != d->stat.st_dev)
+                        s.st_ino != dir_stat(d)->st_ino ||
+                        s.st_dev != dir_stat(d)->st_dev)
                 {
                         show_error_dir("Directory changed or unavailable", d, d->name);
                         return -1;
@@ -383,7 +383,6 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         nd->name = my_strdup(name);
         nd->parent_entry = parent_entry;
         nd->ref = 1; /* The directory is now referenced once */
-        memcpy(&nd->stat, &tmp_stat, sizeof(tmp_stat));
         nd->magick = 0xDADDAD;
         nd->fd = -1;
         nd->entries=entries;

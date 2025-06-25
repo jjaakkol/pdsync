@@ -1213,7 +1213,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                                 goto fail;
 		        }
 	        }
-        	if (one_file_system && from->parent && fentry->stat.st_dev!=from->parent->stat.st_dev) {
+        	if (one_file_system && from->parent && fentry->stat.st_dev!=dir_stat(from->parent)->st_dev) {
 	                /* On different file system and one_file_system was given */
                         skip_entry(to,fentry);
 	        } else if (fentry->stat.st_ino == target_stat.st_ino &&  fentry->stat.st_dev == target_stat.st_dev ) {
@@ -1316,7 +1316,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
     Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
     if (parent_tentry==NULL) {
         parent_tentry=my_calloc(1,sizeof(Entry));
-        parent_tentry->name=my_strdup(target); 
+        init_entry(parent_tentry, dir_open(to_parent), my_strdup(target));
+        dir_close(to_parent);
     }
     to=pre_scan_directory(to_parent, parent_tentry);
     if (to==NULL) {

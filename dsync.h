@@ -49,24 +49,27 @@ typedef struct {
         struct DirectoryStruct *dir;
 } Entry;
 
-/* We keep the fd of all directories around until the directories are processed to be able to use 
-   openat() and to make sure that symlink or mv race conditions do not take us to a wrong directory */
+// We keep the fd's of directories in a LRU cache to avoid closing and opening needlessly
+// We use openat() always to open files
 typedef struct DirectoryStruct {
-        int magick; /* 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie */
-        int fd;
-        atomic_int fdrefs; // Count references to fd so that we can cache fds
-        struct stat stat;
+        int magick;                             // 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie 
+        int fd;                                 // fd of open directory, -1 if not open
+        atomic_int fdrefs;                      // Count references to fd so that we can cache fds
+        struct DirectoryStruct *lru_prev;       // The LRU list
+        struct DirectoryStruct *lru_next;
         struct DirectoryStruct *parent;
         Entry *parent_entry;
         char *name;
         int entries;
-        atomic_int descendants; /* Total number of known descendants, which grows while they are being scanned. */
+        atomic_int descendants;                 /* Total number of known descendants, which grows while they are being scanned. */
         atomic_int ref;
         Entry *array;
         Entry **sorted;
-        struct DirectoryStruct *lru_prev;
-        struct DirectoryStruct *lru_next;
 } Directory;
+
+inline const struct stat *dir_stat(const Directory *d) { 
+        return &d->parent_entry->stat;
+}
 
 typedef struct {
         struct timespec start_clock_boottime;
