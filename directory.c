@@ -170,7 +170,6 @@ static void d_freedir_locked(Directory *dir)
         {
                 dir->entries--;
                 Entry *e = &dir->array[dir->entries];
-                assert(!e->last_job); // no job should be running on this entry
                 if (e->link)
                         free(e->link);
                 free(e->name);

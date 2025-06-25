@@ -50,9 +50,6 @@ int free_job(Job *job)
         assert(job->state == JOB_READY || job->state == SCAN_READY);
         assert(job->magick == 0x10b10b);
 
-        /* If job is last in its fentry queue the fentry queue is done and can be marked empty */
-        if (job->fentry->last_job == job) job->fentry->last_job=NULL;
-
         /* Remove job from pre_scan_list Job queue */
         if (first_job == job) {
                 first_job = job->next;

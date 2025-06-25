@@ -46,7 +46,6 @@ typedef struct {
         struct stat stat;
         char *link;
         int error;                          /* If there was a IO error with stat() */
-        struct JobStruct *last_job;         /* Last queued job associated with this entry  */
         struct DirectoryStruct *dir;
 } Entry;
 
