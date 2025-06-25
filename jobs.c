@@ -13,7 +13,6 @@ typedef enum
 
 typedef struct JobStruct
 {
-        pthread_t tid;
         int ret;
         Directory *to;
         int magick; /* 0x10b10b */
@@ -93,7 +92,6 @@ JobResult run_one_job(Job *j)
         {
         case SCAN_WAITING:
                 j->state = SCAN_RUNNING;
-                j->tid = pthread_self();
                 mark_job_start(file_path(j->from, j->fentry->name), "readdir start");
                 pthread_mutex_unlock(&mut);
                 j->result = scan_directory(j->from, j->fentry);
@@ -110,7 +108,6 @@ JobResult run_one_job(Job *j)
                 if (j->fentry->state!=ENTRY_FAILED) {
                         /* No point in running job if there was an error */
                         j->state = JOB_RUNNING;
-                        j->tid = pthread_self();
                         mark_job_start(file_path(j->from, j->fentry->name), "job start");
                         pthread_mutex_unlock(&mut);
                         j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
@@ -228,7 +225,6 @@ Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         assert(fentry);
         Job *job = my_calloc(1, sizeof(Job));
 
-        job->tid=0;
         job->magick = 0x10b10b;
         job->from = from;
         job->fentry = fentry;
