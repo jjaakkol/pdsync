@@ -30,7 +30,7 @@ typedef struct JobStruct
 
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-static Job *pre_scan_list = NULL;
+static Job *first_job = NULL;
 static Job *last_job=NULL;
 
 void job_lock(void) {
@@ -55,12 +55,12 @@ int free_job(Job *job)
         if (job->fentry->last_job == job) job->fentry->last_job=NULL;
 
         /* Remove job from pre_scan_list Job queue */
-        if (pre_scan_list == job) {
-                pre_scan_list = job->next;
-                if (pre_scan_list==NULL) last_job=NULL;
+        if (first_job == job) {
+                first_job = job->next;
+                if (first_job==NULL) last_job=NULL;
         } else
         {
-                Job *prev = pre_scan_list;
+                Job *prev = first_job;
                 assert(prev->magick == 0x10b10b);
                 while (prev->next != job)
                         prev = prev->next;
@@ -138,7 +138,7 @@ JobResult run_one_job(Job *j)
 JobResult run_any_job()
 {
         mark_job_start(NULL,"select job");
-        Job *j=pre_scan_list;
+        Job *j=first_job;
         while(j && j->state==SCAN_READY) j=j->next; // Skip ready jobs to find first runnable job
         for(; j && j->offset==DSYNC_FILE_WAIT ; j=j->next) {
                 if (j->state == JOB_WAITING)
@@ -239,33 +239,21 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
         job->callback = callback;
         job->state = JOB_WAITING;
 
-        //for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
+        //for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next)
         //        assert(queue_job->magick == 0x10b10b);
         if (job->from)
                 dir_claim(job->from);
         if (job->to)
                 dir_claim(job->to);
 
-        if (pre_scan_list==NULL) pre_scan_list=last_job=job;
-#if 0
-        else if (fentry->last_job)
-        {
-                /* Put it last to its own Entry queue */
-                job->next=fentry->last_job->next;
-                fentry->last_job->next=job;
-                fentry->last_job=job;
-                if (last_job->next==job) last_job=job;
-        }
-#endif
-        else
-        {
-                /* If there was not a fentry queue, put it last to global queue */
+        if (first_job==NULL) {
+                first_job=last_job=job;
+        } else {
                 if (last_job) last_job->next=job;
                 last_job=job;
         }
-        //for (Job *queue_job = pre_scan_list; queue_job; queue_job = queue_job->next)
+        //for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next)
         //      assert(queue_job->magick == 0x10b10b);
-
 
         scans.jobs++;
         if (++scans.queued > scans.maxjobs)
@@ -341,13 +329,12 @@ int print_jobs(FILE *f)
                                  (now.tv_nsec - s->job_start.tv_nsec) / 1000000LL;
                 if (idle > 10000) {
                         fprintf(f, "%5d : %5llds  : %s\n", i, idle/1000, s->status);
-                        // abort(); // Use to debug slow threads
                 } else fprintf(f, "%5d : %5lldms : %s\n", i, idle, s->status);
                 i++;
         }
         if (progress < 5)
                 return 0;
-        Job *j = pre_scan_list;
+        Job *j = first_job;
         i = 0;
         while (j)
         {
@@ -377,8 +364,7 @@ void start_job_threads(int job_threads, Job *job)
         /* Show progress until all jobs are finished. */
         while (scans.queued > 0)
         {
-                assert(pre_scan_list);
-                /* call show_progress() while waiting for the to finish */
+                assert(first_job);
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
                 long long now = ts.tv_sec * 1000000000L + ts.tv_nsec;
@@ -396,5 +382,4 @@ void start_job_threads(int job_threads, Job *job)
                 }
         }
         pthread_mutex_unlock(&mut);
-        //assert(pre_scan_list==NULL);
 }
