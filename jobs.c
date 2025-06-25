@@ -222,9 +222,8 @@ void *job_queue_loop(void *arg)
         /* Never return */
 }
 
-// Submit a job as last in in its own fentry or global last
-// Fentry and global lists form a single list of jobs.
-Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback)
+// Create a new job and init it. 
+Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback)
 {
         assert(fentry);
         Job *job = my_calloc(1, sizeof(Job));
@@ -246,12 +245,7 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
         if (job->to)
                 dir_claim(job->to);
 
-        if (first_job==NULL) {
-                first_job=last_job=job;
-        } else {
-                if (last_job) last_job->next=job;
-                last_job=job;
-        }
+
         //for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next)
         //      assert(queue_job->magick == 0x10b10b);
 
@@ -265,9 +259,15 @@ Job *submit_job_locked(Directory *from, Entry *fentry, Directory *to, const char
 
 Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
         pthread_mutex_lock(&mut);
-        Job *j=submit_job_locked(from, fentry, to, target, offset, callback);
+        Job *job=create_job(from, fentry, to, target, offset, callback);
+        if (first_job==NULL) {
+                first_job=last_job=job;
+        } else {
+                if (last_job) last_job->next=job;
+                last_job=job;
+        }
         pthread_mutex_unlock(&mut);
-        return j;
+        return job;
 }
 
 
