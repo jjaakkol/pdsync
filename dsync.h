@@ -160,7 +160,6 @@ extern int recursive;
 #define DSYNC_FILE_WAIT -123 // Wait for all jobs to attached to From Entry to finish before starting job
 #define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
 Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
-Job *submit_job_locked(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 void job_lock();
 void job_unlock();
 
