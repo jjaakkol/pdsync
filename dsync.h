@@ -70,36 +70,37 @@ typedef struct DirectoryStruct {
 } Directory;
 
 typedef struct {
-    atomic_int dirs_read;
-    atomic_int entries_checked;
-    atomic_llong bytes_checked;
-    int dirs_skipped;
-    int files_skipped;
-    atomic_int files_synced;
+        struct timespec start_clock_boottime;
+        atomic_int dirs_read;
+        atomic_int entries_checked;
+        atomic_llong bytes_checked;
+        int dirs_skipped;
+        int files_skipped;
+        atomic_int files_synced;
 
-    atomic_int read_directory_jobs;
-    atomic_int read_directory_miss;
+        atomic_int read_directory_jobs;
+        atomic_int read_directory_miss;
     
-    int pre_scan_hits;
-    int pre_scan_wait_hits;
-    int pre_scan_misses;
-    int pre_scan_too_late; /* Prescan was too late, the directory was already scanned by another thread */
-    int pre_scan_dirs;
-    int pre_scan_allocated;
-    int pre_scan_used;
+        int pre_scan_hits;
+        int pre_scan_wait_hits;
+        int pre_scan_misses;
+        int pre_scan_too_late; /* Prescan was too late, the directory was already scanned by another thread */
+        int pre_scan_dirs;
+        int pre_scan_allocated;
+        int pre_scan_used;
 
-    int jobs;
-    int maxjobs;
-    int queued;
+        int jobs;
+        int maxjobs;
+        int queued;
 
-    int dirs_active;
-    int entries_active;
-    int dirs_active_max;
-    int dirs_freed;
+        int dirs_active;
+        int entries_active;
+        int dirs_active_max;
+        int dirs_freed;
 
-    int slow_io_secs;
-    int idle_threads;
-    atomic_int open_dir_count;
+        int slow_io_secs;
+        int idle_threads;
+        atomic_int open_dir_count;
 } Scans;
 extern Scans scans;
 typedef struct JobStruct Job;

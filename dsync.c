@@ -69,7 +69,6 @@ static struct stat target_stat;
 static struct stat source_stat;
 
 typedef struct {
-    struct timespec start_clock_boottime;
     int dirs_created;
     int files_copied;
     atomic_int files_updated;
@@ -393,7 +392,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
 
         clock_gettime(CLOCK_BOOTTIME, &now);
         long ns = (now.tv_sec*1000000000L + now.tv_nsec) - 
-                opers.start_clock_boottime.tv_sec*1000000000L + opers.start_clock_boottime.tv_nsec;
+                scans.start_clock_boottime.tv_sec*1000000000L + scans.start_clock_boottime.tv_nsec;
         long s = ns / 1000000000L;
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
 
@@ -478,7 +477,7 @@ void print_progress() {
         if (progress>=2) {
                 fprintf(tty_stream,"\033[2J\033[H### Pdsync syncing '%s' -> '%s'\n", s_frompath, s_topath);
         }
-        long s = now.tv_sec - opers.start_clock_boottime.tv_sec;
+        long s = now.tv_sec - scans.start_clock_boottime.tv_sec;
         int files_synced=atomic_load(&scans.files_synced);
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
@@ -1465,7 +1464,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Record the starting timestamp
-        clock_gettime(CLOCK_BOOTTIME,&opers.start_clock_boottime);
+        clock_gettime(CLOCK_BOOTTIME,&scans.start_clock_boottime);
 
         // Init the static source and target
         // FIXME: this should be removed.
