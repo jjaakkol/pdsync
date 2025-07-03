@@ -97,6 +97,7 @@ typedef struct {
         int jobs;
         int maxjobs;
         int queued;
+        int jobs_waiting; // Jobs waiting for other jobs to finish
 
         int dirs_active;
         int entries_active;

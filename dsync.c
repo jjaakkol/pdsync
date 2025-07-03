@@ -352,6 +352,9 @@ static void print_scans(const Scans *scans) {
     if (scans->jobs) {
         printf("%8d total number of jobs run\n", scans->jobs);
     }
+    if (scans->jobs_waiting) {
+        printf("%8d jobs waiting\n", scans->jobs_waiting);
+    }
     if (scans->dirs_active>=0) {
         printf("%8d directories in memory now\n",scans->dirs_active);
     }
@@ -493,13 +496,13 @@ void print_progress() {
         int files_synced=atomic_load(&scans.files_synced);
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s |%5d queued|%3d idle |\n",
+        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s | %d/%d queued|%3d idle |\n",
                 files_synced,
                 files_total, 
                 1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
-                scans.queued,
+                scans.queued, scans.maxjobs,
                 scans.idle_threads
         );
         if (progress>=2) print_opers(tty_stream,&opers);
@@ -762,7 +765,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 } else {
                         for (int i=0; i<num_jobs; i++) {
                                 // Optimization: if already have a long queue, don't go through submit and it's locks. 
-                                if (scans.idle_threads==0 && scans.queued > threads * 10) {
+                                if (0 && scans.idle_threads==0 && scans.queued - scans.jobs_waiting > threads * 10) {
                                         copy_regular(from, fentry, to, target, copy_job_size*i);
                                 } else {
                                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);

@@ -53,6 +53,7 @@ void release_jobs(Directory *d) {
                 first_job=d->last_job;
                 if (last_job==NULL) last_job=first_job;
                 d->last_job=NULL;
+                scans.jobs_waiting--;
         }
 }
 
@@ -156,13 +157,9 @@ JobResult run_any_job()
                 if (j->state == JOB_WAITING)
                         return run_one_job(j); // First runnable file waiting job is done waiting for others
         }
-        for(; j && j->offset==DSYNC_DIR_WAIT ; j=j->next) {
-                if (j->state == JOB_WAITING)
-                        return run_one_job(j); // First runnable directory waiting job is done waiting for others
-        }
         for (; j; j=j->next) {
                 if ( (j->state == SCAN_WAITING || j->state == JOB_WAITING) &&
-                        j->offset!=DSYNC_FILE_WAIT && j->offset!=DSYNC_DIR_WAIT )
+                        j->offset!=DSYNC_FILE_WAIT)
                         return run_one_job(j); /* First runnable which is not waiting for other jobs */
         }
 
@@ -276,6 +273,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         if (offset==DSYNC_DIR_WAIT) {
                 assert(fentry && fentry->dir && fentry->dir->last_job==NULL);
                 fentry->dir->last_job=job;
+                scans.jobs_waiting++;
         } else if (first_job==NULL) {
                 first_job=last_job=job;
         } else {
