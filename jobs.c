@@ -42,6 +42,20 @@ void job_unlock(void) {
         pthread_mutex_unlock(&mut);
 }
 
+// If Directory's Job's have been done, release its last job to queue
+// Also do this to parent directories.
+void release_jobs(Directory *d) {
+        if (d->parent) release_jobs(d->parent);
+        d->jobs--;
+        if (debug) fprintf(stderr,"release_job: %d/%d left: %s (%p)\n", d->jobs, scans.queued, dir_path(d), d->last_job);    
+        if (d->jobs==0 && d->last_job) {
+                d->last_job->next=first_job;
+                first_job=d->last_job;
+                if (last_job==NULL) last_job=first_job;
+                d->last_job=NULL;
+        }
+}
+
 /* Remove job from queue's and free its resources. Mutex must be held. */
 int free_job(Job *job)
 {
@@ -50,7 +64,9 @@ int free_job(Job *job)
         assert(job->state == JOB_READY || job->state == SCAN_READY);
         assert(job->magick == 0x10b10b);
 
-        /* Remove job from pre_scan_list Job queue */
+        if (debug) fprintf(stderr,"Debug: free_job  from=%p %s\n", job->from,  file_path(job->from, job->fentry->name));
+        /* Remove job from Job queue */
+        scans.queued--;
         if (first_job == job) {
                 first_job = job->next;
                 if (first_job==NULL) last_job=NULL;
@@ -63,9 +79,11 @@ int free_job(Job *job)
                 assert(prev); // the job must be in the list
                 prev->next = job->next;
                 if (job==last_job) last_job=prev;
-        }
-
-        /* Freedir counts references */
+        } 
+        if (job->fentry->dir) {
+                if (debug) fprintf(stderr,"Debug: releasing job: from=%p %s\n", job->from,  dir_path(job->fentry->dir));
+                release_jobs(job->fentry->dir);
+        } else if (job->from) release_jobs(job->from);
         if (job->from) d_freedir(job->from);
         if (job->to) d_freedir(job->to);
         int ret = job->ret;
@@ -73,9 +91,9 @@ int free_job(Job *job)
         job->state = JOB_INVALID;
         job->magick = 1234569; /* Mark as a zombie */
         free(job);
-
         return ret;
 }
+
 
 /* Runs one job: can be called by a thread when waiting jobs to finish.
  * Assumes mutex is held.
@@ -109,12 +127,12 @@ JobResult run_one_job(Job *j)
                         pthread_mutex_unlock(&mut);
                         j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                         pthread_mutex_lock(&mut);
+                        mark_job_start(file_path(j->from, j->fentry->name), "job ended");
                 }
                 j->state = JOB_READY;
-                scans.queued--;
-                pthread_cond_broadcast(&cond);
                 JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
+                pthread_cond_broadcast(&cond);
                 return ret;
 
         default:
@@ -197,10 +215,11 @@ static struct ThreadStatus *first_status = NULL;
 
 void set_thread_status_f(const char *file, const char *s, const char *func, int mark)
 {
-        if (progress < 3)
+        if (progress < 3 && debug==0)
                 return;
         if (mark) clock_gettime(CLOCK_BOOTTIME, &status.job_start);
         snprintf(status.status, MAXLEN - 1, "%12s():%-12s : %.100s", func, s, (file) ? file : "");
+        if (debug) fprintf(stderr, "Debug: %s\n", status.status);
 }
 
 /* Threads wait in this loop for jobs to run */
@@ -237,29 +256,38 @@ Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *targe
                 dir_claim(job->from);
         if (job->to)
                 dir_claim(job->to);
-
-
-        //for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next)
-        //      assert(queue_job->magick == 0x10b10b);
+        for(Directory *d=job->from; d; d=d->parent) d->jobs++;
+        if (fentry->dir) {
+                fentry->dir->jobs++;
+                dir_claim(fentry->dir);
+        }
 
         scans.jobs++;
         if (++scans.queued > scans.maxjobs)
                 scans.maxjobs = scans.queued;
-        pthread_cond_broadcast(&cond);
 
         return job;
 }
 
 Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
-        pthread_mutex_lock(&mut);
+        DEBUG("submit_job: from=%s, fentry=%s to=%s, target=%s, offset=%ld callback=%p\n", dir_path(from), fentry->name, dir_path(to), target, offset, callback);
+        job_lock();
         Job *job=create_job(from, fentry, to, target, offset, callback);
-        if (first_job==NULL) {
+        if (offset==DSYNC_DIR_WAIT) {
+                assert(fentry && fentry->dir && fentry->dir->last_job==NULL);
+                fentry->dir->last_job=job;
+        } else if (first_job==NULL) {
                 first_job=last_job=job;
         } else {
-                if (last_job) last_job->next=job;
+                assert(last_job && last_job->next==NULL);
+                last_job->next=job;
                 last_job=job;
         }
-        pthread_mutex_unlock(&mut);
+        /*for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next) {
+                assert(queue_job->magick == 0x10b10b);
+        }*/
+        pthread_cond_broadcast(&cond);
+        job_unlock();
         return job;
 }
 

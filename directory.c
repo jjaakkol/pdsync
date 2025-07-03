@@ -157,6 +157,7 @@ static void d_freedir_locked(Directory *dir)
         if (dir->ref>0) return; 
         assert(dir->ref==0);
         assert(dir->fdrefs==0);
+        assert(dir->last_job==NULL);
 
         if (dir->fd >= 0) {
                 lru_remove(dir);
@@ -393,6 +394,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         /* Init the entry array for Directories and submit jobs */
         for (int i = 0; i < entries; i++) {
                 nd->array[i].name=dents[i].name;
+#if 0
                 if (recursive && dents[i].d_type==DT_DIR) {
                         Entry *e=&nd->array[i];
                         init_entry(e, dfd, e->name);
@@ -405,6 +407,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                                 }
                         }
                 }
+#endif
         }
         free(dents);
         closedir(d);

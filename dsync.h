@@ -61,13 +61,15 @@ typedef struct DirectoryStruct {
         Entry *parent_entry;
         char *name;
         int entries;
-        atomic_int descendants;                 /* Total number of known descendants, which grows while they are being scanned. */
+        atomic_int descendants;                 // Total number of known descendants, which grows while they are being scanned. */
         atomic_int ref;
         Entry *array;
         Entry **sorted;
+        struct JobStruct *last_job;
+        int jobs;                               // Number of jobs running or queued in this directory
 } Directory;
 
-inline const struct stat *dir_stat(const Directory *d) { 
+static inline const struct stat *dir_stat(const Directory *d) { 
         return &d->parent_entry->stat;
 }
 
@@ -150,18 +152,24 @@ static inline void *my_realloc(void *ptr, size_t size) {
 }
 #define strdup(X) ( use_my_strdup_instead(X) )
 
-
 extern int progress;
 extern int privacy;
 extern int recursive;
+extern int debug;
 
-
+#define DEBUG(...) do { \
+    if (debug > 0) { \
+        fprintf(stderr, "[%s:%s():%d] ", __FILE__, __func__, __LINE__); \
+        fprintf(stderr, __VA_ARGS__); \
+    } \
+} while(0)
 
 // scandir.c
 // submit_job() flags
 #define DSYNC_FILE_WAIT -123 // Wait for all jobs to attached to From Entry to finish before starting job
 #define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
 Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+void job_release(Job *j);
 void job_lock();
 void job_unlock();
 

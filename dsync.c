@@ -46,9 +46,12 @@ static int show_warnings=1;
 int privacy=0;
 int progress=0;
 static int threads=4;
-uid_t myuid=0;
+int debug=0;
 const char *sync_tag=NULL;
 const char *sync_tag_name="user.pdsync";
+
+uid_t myuid=0;
+
 
 
 FILE *tty_stream=NULL; /* For --progress */
@@ -110,7 +113,8 @@ enum {
         DELETE_ONLY=257,
         THREADS=258,
         SYNC_TAG=259,
-        SYNC_TAG_NAME=260
+        SYNC_TAG_NAME=260,
+        DEBUG=261
 };
 
 
@@ -141,6 +145,7 @@ static struct option options[]= {
     { "threads",         1, NULL, THREADS },
     { "sync-tag",        1, NULL, SYNC_TAG },
     { "sync-tag-name",   1, NULL, SYNC_TAG_NAME },
+    { "debug",           0, NULL, DEBUG },
     { NULL, 0, NULL, 0 }       
 };
 
@@ -282,6 +287,7 @@ static int parse_options(int argc, char *argv[]) {
                 }
         case SYNC_TAG_NAME: sync_tag_name=optarg; break;
         case SYNC_TAG: sync_tag=optarg; break;
+        case DEBUG: debug++; fprintf(stderr,"Debug: %d\n",debug); break; 
 	case 'a': 
 	    recursive=1;
 	    preserve_permissions=1;
@@ -1062,7 +1068,7 @@ void skip_entry(Directory *to, const Entry *fentry) {
 }
 
 /* Job call back to update the inode bits */
-JobResult sync_metadata(Directory *from_parent, Entry *fentry, Directory *to, const char *target, off_t offset) {
+JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
         set_thread_status(file_path(to, target),"metadata");
 
@@ -1294,7 +1300,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
                 char buf[256];
                 size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
                 if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
-                        item("TAGGED", to, target);
+                        item("TAGGED", to_parent, target);
                         scans.dirs_skipped++;
                         close(fd);
                         return 0;
@@ -1405,7 +1411,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         /* Job to set the directory metadata bits needs to wait for all create jobs to have finished */
         submit_job(from_parent, parent_fentry, to_parent, target, DSYNC_DIR_WAIT, sync_metadata);
 
-    
     ret=0;
     int failed_jobs=0;
 
