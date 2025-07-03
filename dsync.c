@@ -43,6 +43,7 @@ int recursive=0;
 static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
+static int check=1;
 int privacy=0;
 int progress=0;
 static int threads=4;
@@ -114,39 +115,41 @@ enum {
         THREADS=258,
         SYNC_TAG=259,
         SYNC_TAG_NAME=260,
-        DEBUG=261
+        DEBUG=261,
+        CHECK=262
 };
 
 
 static struct option options[]= {
-    { "dry-run",         0, NULL, 'n' },
-    { "itemize",         0, NULL, 'i' },
-    { "progress",        0, NULL, 'P' },
-    { "version",         0, NULL, 'V' },
-    { "help",            0, NULL, 'h' },
-    { "one-file-system", 0, NULL, 'x' },
-    { "quiet",           0, NULL, 'q' },
-    { "delete",          0, NULL, 'd' },
-    { "archive",         0, NULL, 'a' },
-    { "links",           0, NULL, 'l' },
-    { "perms",           0, NULL, 'p' },
-    { "owner",           0, NULL, 'o' },
-    { "group",           0, NULL, 'g' },
-    { "devices",         0, NULL, 'D' },
-    { "times",           0, NULL, 't' },
-    { "recursive",       0, NULL, 'r' },
-    { "update-all",      0, NULL, 'U' },
-    { "sparse",          0, NULL, 'S' },
-    { "hard-links",      0, NULL, 'H' },
-    { "exclude-regex",   1, NULL, 'X' },
-    { "atimes",          0, NULL, ATIME_PRESERVE },
-    { "privacy",         0, NULL, PRIVACY },
-    { "delete-only",     0, NULL, DELETE_ONLY },
-    { "threads",         1, NULL, THREADS },
-    { "sync-tag",        1, NULL, SYNC_TAG },
-    { "sync-tag-name",   1, NULL, SYNC_TAG_NAME },
-    { "debug",           0, NULL, DEBUG },
-    { NULL, 0, NULL, 0 }       
+        { "dry-run",         0, NULL, 'n' },
+        { "itemize",         0, NULL, 'i' },
+        { "progress",        0, NULL, 'P' },
+        { "version",         0, NULL, 'V' },
+        { "help",            0, NULL, 'h' },
+        { "one-file-system", 0, NULL, 'x' },
+        { "quiet",           0, NULL, 'q' },
+        { "delete",          0, NULL, 'd' },
+        { "archive",         0, NULL, 'a' },
+        { "links",           0, NULL, 'l' },
+        { "perms",           0, NULL, 'p' },
+        { "owner",           0, NULL, 'o' },
+        { "group",           0, NULL, 'g' },
+        { "devices",         0, NULL, 'D' },
+        { "times",           0, NULL, 't' },
+        { "recursive",       0, NULL, 'r' },
+        { "update-all",      0, NULL, 'U' },
+        { "sparse",          0, NULL, 'S' },
+        { "hard-links",      0, NULL, 'H' },
+        { "exclude-regex",   1, NULL, 'X' },
+        { "atimes",          0, NULL, ATIME_PRESERVE },
+        { "privacy",         0, NULL, PRIVACY },
+        { "delete-only",     0, NULL, DELETE_ONLY },
+        { "threads",         1, NULL, THREADS },
+        { "sync-tag",        1, NULL, SYNC_TAG },
+        { "sync-tag-name",   1, NULL, SYNC_TAG_NAME },
+        { "debug",           0, NULL, DEBUG },
+        { "check",           0, NULL, CHECK },
+        { NULL, 0, NULL, 0 }       
 };
 
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
@@ -429,6 +432,9 @@ static void print_opers(FILE *stream, const Opers *stats) {
     fprintf(stream, "%s/s\n", format_bytes(stats->bytes_copied*1000000000.0/ns,buf));    
     fprintf(stream, "%8s bytes checked, ", format_bytes(scans.bytes_checked, buf));
     fprintf(stream, "%s/s\n", format_bytes(scans.bytes_checked*1000000000.0/ns,buf));
+    if (scans.bytes_skipped) {
+        fprintf(stream, "%8s bytes skipped\n", format_bytes(scans.bytes_skipped, buf));
+    }
     if (stats->sparse_bytes) {
         fprintf(stream, "%8s data in sparse blocks\n", format_bytes(stats->sparse_bytes, buf));
     }
@@ -660,12 +666,12 @@ int copy_regular_rw(int fd_in, int fd_out, off_t filesize, off_t offset) {
                 }
                 if (r==0) goto fail; // we got an EOF on our chunk
 
-                if (update_all) {
+                if (update_all || check) {
                         static _Thread_local char *wbuf=NULL;
                         if (wbuf==NULL) wbuf=my_malloc(bufsize);
                         if (read(fd_out, wbuf, r)==r && memcmp(buf, wbuf, r)==0) {
                                 // Identical bytes, we can skip the write
-                                //atomic_fetch_add(&scans.bytes_skipped, r);
+                                atomic_fetch_add(&scans.bytes_skipped, r);
                                 written+=r;
                                 atomic_fetch_add(&scans.bytes_checked, r);
                                 continue;
@@ -766,8 +772,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 }
         }
 
-
-        if (update_all) {
+        if (update_all || check) {
                 if (sparse_copy) {
                         snprintf(buf,sizeof(buf)-1,"update mmap %ld", offset/copy_job_size);
                         set_thread_status(file_path(to,target),buf);
@@ -826,7 +831,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         goto fail;
         	}
         }
-
 
         if (offset/copy_job_size == num_jobs-1) {
                 // This is the last job
