@@ -2,9 +2,6 @@
 
 typedef enum
 {
-        SCAN_WAITING,
-        SCAN_RUNNING,
-        SCAN_READY,
         JOB_WAITING,
         JOB_RUNNING,
         JOB_READY,
@@ -62,7 +59,7 @@ int free_job(Job *job)
 {
         assert(job);
         assert(job->fentry);
-        assert(job->state == JOB_READY || job->state == SCAN_READY);
+        assert(job->state == JOB_READY);
         assert(job->magick == 0x10b10b);
 
         if (debug) fprintf(stderr,"Debug: free_job  from=%p %s\n", job->from,  file_path(job->from, job->fentry->name));
@@ -106,18 +103,6 @@ JobResult run_one_job(Job *j)
         
         switch (j->state)
         {
-        case SCAN_WAITING:
-                j->state = SCAN_RUNNING;
-                mark_job_start(file_path(j->from, j->fentry->name), "readdir start");
-                pthread_mutex_unlock(&mut);
-                j->result = scan_directory(j->from, j->fentry);
-                pthread_mutex_lock(&mut);
-                j->state = SCAN_READY;
-                scans.queued--;
-                pthread_cond_broadcast(&cond);
-                return RET_OK;
-                break;
-
         case JOB_WAITING:
                 assert(j->magick == 0x10b10b);
                 assert(j->fentry);
@@ -152,13 +137,12 @@ JobResult run_any_job()
 {
         mark_job_start(NULL,"select job");
         Job *j=first_job;
-        while(j && j->state==SCAN_READY) j=j->next; // Skip ready jobs to find first runnable job
         for(; j && j->offset==DSYNC_FILE_WAIT ; j=j->next) {
                 if (j->state == JOB_WAITING)
                         return run_one_job(j); // First runnable file waiting job is done waiting for others
         }
         for (; j; j=j->next) {
-                if ( (j->state == SCAN_WAITING || j->state == JOB_WAITING) &&
+                if ( (j->state == JOB_WAITING) &&
                         j->offset!=DSYNC_FILE_WAIT)
                         return run_one_job(j); /* First runnable which is not waiting for other jobs */
         }
@@ -289,50 +273,23 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         return job;
 }
 
-
-#if 0
-// This needs to go way probably */
-/* wait for all jobs in the Entry to be done  */
-int wait_for_entry(Entry *e)
-{
-        assert(e);
-        int ret = 0;
-        pthread_mutex_lock(&mut);
-        Job *job = e->job;
-        /* Run the whole job queue of Entry until it is empty or READY */
-        while (job && job->fentry == e && job->state != JOB_READY && job->state != SCAN_READY)
-        {
-                switch (job->state)
-                {
-                case JOB_RUNNING:
-                case SCAN_RUNNING:
-                        /* Don't wait for ourselves */
-                        if (job->tid==pthread_self()) {
-                                job=job->next;
-                                break; 
-                        }
-                        /* Run a job while we wait */
-                        set_thread_status(file_path(job->from, job->fentry->name), "waiting");
-                        run_any_job();
-                        job = e->job; // Get the job again, it might have changed
-                        break;
-                case JOB_WAITING:
-                case SCAN_WAITING:
-                        run_one_job(job); // Run it ourselves
-                        job = e->job;
-                        break;
-                case JOB_READY:
-                case SCAN_READY:
-                        job = job->next;
-                default:
-                        assert(0);
-                        break;
-                }
+Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
+        DEBUG("from=%s, fentry=%s to=%s, target=%s, offset=%ld callback=%p\n", dir_path(from), fentry->name, dir_path(to), target, offset, callback);
+        job_lock();
+        Job *job=create_job(from, fentry, to, target, offset, callback);
+        if (first_job==NULL) {
+                first_job=last_job=job;
+        } else {
+                job->next=first_job;
+                first_job=job;
         }
-        pthread_mutex_unlock(&mut);
-        return ret;
+        /*for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next) {
+                assert(queue_job->magick == 0x10b10b);
+        }*/
+        pthread_cond_broadcast(&cond);
+        job_unlock();
+        return job;
 }
-#endif
 
 /* Debugging. Assume mutex is held */
 int print_jobs(FILE *f)

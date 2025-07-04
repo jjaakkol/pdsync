@@ -1239,7 +1239,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
-                        submit_job(from, fentry, to, target, 0, dsync);
+                        submit_job_first(from, fentry, to, target, 0, dsync);
                         goto out;
 	        }
     
