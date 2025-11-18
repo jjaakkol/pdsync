@@ -154,6 +154,7 @@ static struct option options[]= {
 };
 
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
+JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const char *target, off_t offset);
 
 static void show_version() {
     printf("pdsync "VERSION" (C) 09.2000 - 05.2025 Jani Jaakkola (jani.jaakkola@helsinki.fi)\n");
@@ -714,6 +715,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         int ret=0;
         off_t copy_job_size=16*1024*1024;
         char buf[32];
+        int num_jobs=0;
 
         assert(from && to && fentry);
         const char *source=fentry->name;
@@ -725,6 +727,8 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 show_error_dir("open", from, source);
                 goto fail; 
         }
+        // FIXME: this gets confured if size of the file changes during copying
+        num_jobs= (from_stat.st_size + copy_job_size - 1) / copy_job_size;
         if (dryrun) {
                 item("CP",to,target);
                 opers.bytes_copied+=from_stat.st_size;
@@ -736,8 +740,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 write_error("open", to, target);
                 goto fail;
         }
-
-        int num_jobs= (from_stat.st_size + copy_job_size - 1) / copy_job_size;
 
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
@@ -763,7 +765,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
                 /* Submit the actual copy jobs */
                 if (from_stat.st_size==0) {
-                        goto end; // Zero size file, we are done
+                        goto end; /* Zero size file. We are done. */
                 } else if (from_stat.st_size<=16*1024) {
                         offset=0; // We have the file open and it is small. Copy it ourselves
                 } else {
@@ -775,6 +777,8 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                                         submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                                 }
                         }
+                        /* The metadata needs to be synced last. If there are multiple copy jobs, submit it last */
+                        if (num_jobs>1) submit_job(from, fentry, to, target, DSYNC_FILE_WAIT, sync_metadata);
                         goto end;
                 }
         }
@@ -840,12 +844,16 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
         if (offset/copy_job_size == num_jobs-1) {
-                // This is the last job
+                // This is the last job. Show copy done, even if some copy jobs are still running
                 item("CP",to,target);
                 opers.files_copied++;
         }
 
         end:
+
+        /* Optimization: if there was only one chunk of file to copy or 0 size file, we call sync_metadata immediately */
+        if (offset==0 && num_jobs<=1) sync_metadata(from, fentry, to, target, 0);
+
         if (offset>=0) {
                 snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
@@ -1083,9 +1091,6 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         int ret=0;
         set_thread_status(file_path(to, target),"metadata");
 
-        // Since this is called last for any file or directory, we count here that the file is done
-        atomic_fetch_add(&scans.files_synced,1);
-
         int dfd=dir_open(to);
         if (dfd==-1) {
                 show_error_dir("open parent", to, fentry->name);
@@ -1175,6 +1180,8 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 atomic_fetch_add(&opers.sync_tags,1);
         }
         
+        // Since this is called last for any file or directory, we count here that the file is done
+        atomic_fetch_add(&scans.files_synced,1);
 
         out:
         dir_close(to);
@@ -1199,8 +1206,6 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         if (S_ISREG(fentry->stat.st_mode)) {
 	        /* copy regular might submit jobs */
 	        copy_regular(from, fentry, to, target, -1);
-                /* We have a target to set the inode bits. We submit a job to set its bits */
-                submit_job(from, fentry, to, fentry->name, DSYNC_FILE_WAIT, sync_metadata); // FIXME: do this in copy regular 
                 goto out;
         }
         
@@ -1243,7 +1248,8 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         show_error_dir("Skipping source directory in %s%s\n", from, target);
                         skip_entry(from, fentry);
                 } else if (recursive) {
-	                /* All sanity checks turned out green: we start a job to recurse to subdirectory */
+	                // All checks turned out green: we can and should recurse to subdirectory
+                        // It is submitted as first so that complete directories can be finished and tagged sooner
                         submit_job_first(from, fentry, to, target, 0, dsync);
                         goto out;
 	        }
@@ -1281,7 +1287,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         }
 
         /* If we did not start a Job, we can just update the metadata now, */
-        sync_metadata(from, fentry, to, target, depth);
+        sync_metadata(from, fentry, to, target, 0);
 
         int ret=0;
         out: 
