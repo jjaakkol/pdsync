@@ -92,6 +92,7 @@ typedef struct {
     atomic_llong chmod;
     atomic_llong times;
     atomic_llong items;
+    atomic_llong sync_tags; /* count of created sync tags */
 } Opers; 
 Opers opers;
 Scans scans;
@@ -464,6 +465,9 @@ static void print_opers(FILE *stream, const Opers *stats) {
     }
     if (stats->times) {
         fprintf(stream,"%8lld file atime/mtime changed\n", stats->times);
+    }
+    if (stats->sync_tags) {
+        fprintf(stream,"%8lld sync tags set\n", stats->sync_tags);
     }
     if (stats->read_errors) {
         fprintf(stream, "%8d errors on read\n", stats->read_errors);
@@ -1168,6 +1172,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         close(fd);
                 }
                 item("TAG", to, target);
+                atomic_fetch_add(&opers.sync_tags,1);
         }
         
 
