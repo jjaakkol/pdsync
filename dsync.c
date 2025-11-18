@@ -43,7 +43,7 @@ int recursive=0;
 static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
-static int check=1;
+static int check=0;
 int privacy=0;
 int progress=0;
 static int threads=4;
@@ -61,7 +61,7 @@ typedef struct ExcludeStruct {
     regex_t regex;
     struct ExcludeStruct *next;
 } Exclude;
-    
+
 Exclude *exclude_list=NULL;
 Exclude **last_excluded=&exclude_list;
 
