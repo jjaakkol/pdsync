@@ -851,18 +851,18 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         end:
 
+        if (tofd>=0) close(tofd);
+        if (fromfd>=0) close(fromfd);
+
         /* Optimization: if there was only one chunk of file to copy or 0 size file, we call sync_metadata immediately */
         if (offset==0 && num_jobs<=1) sync_metadata(from, fentry, to, target, 0);
+        if (from_dfd>=0) dir_close(from);
+        if (to_dfd>=0) dir_close(to);
 
         if (offset>=0) {
                 snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
-        } else set_thread_status("copy submit", file_path(to,target));
-        if (fromfd>=0) close(fromfd);
-        if (from_dfd>=0) dir_close(from);
-        if (tofd>=0) close(tofd);
-        if (to_dfd>=0) dir_close(to);
-
+        } else set_thread_status("copy submit", file_path(to,target));        
         return ret;
  fail:
         item("ERROR", from, target);
@@ -1127,13 +1127,19 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         if (preserve_permissions && 
                 !S_ISLNK(fentry->stat.st_mode) &&
                 fentry->stat.st_mode!=to_stat.st_mode) {
-                if (!dryrun && fchmodat(dfd, target, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0) {
-                        write_error("fchmodat", to, target);
+                int tfd=-1;
+
+                /* This convoluted if tries to work around a Lustre bug: fchmod() can fail with operation not supported */
+                if ( !dryrun && fchmodat(dfd, target, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0 &&
+                       ( (tfd=openat(dfd, target, O_RDONLY|O_NOFOLLOW)) <0 || fchmod(tfd, fentry->stat.st_mode)<0 )
+                ) {
+                        write_error("fchmodat 2nd attempt", to, target);
                         ret=-1;
                 } else {
                         if (itemize>2) item("CH", to, target);
                         atomic_fetch_add(&opers.chmod,1);
                 }
+                if (tfd>=0) close(tfd);
         }
                 
         // Access times
