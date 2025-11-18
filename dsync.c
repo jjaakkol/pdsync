@@ -75,7 +75,7 @@ static struct stat source_stat;
 typedef struct {
     int dirs_created;
     int files_copied;
-    atomic_int files_updated;
+    atomic_llong files_updated;
     int entries_removed;
     int dirs_removed;
     atomic_llong bytes_copied;
@@ -88,10 +88,10 @@ typedef struct {
     int read_errors;
     atomic_int a_write_errors;
     int no_space;
-    int chown;
-    int chmod;
-    int times;
-    int items;
+    atomic_llong chown;
+    atomic_llong chmod;
+    atomic_llong times;
+    atomic_llong items;
 } Opers; 
 Opers opers;
 Scans scans;
@@ -216,7 +216,7 @@ static void show_warning(const char *why, const char *file) {
 
 static void item(const char *i, const Directory *d, const char *name ) {
         FILE *stream=stdout;
-        opers.items++;
+        atomic_fetch_add(&opers.items,1);
         if (!itemize) return;
         fprintf(stream,"%s: %s%s\n",i,dir_path(d),name);
 }
@@ -457,13 +457,13 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream, "%8d devs created\n", stats->devs_created);
     }
     if (stats->chown) {
-        fprintf(stream,"%8d file owner/group changed\n", stats->chown);
+        fprintf(stream,"%8lld file owner/group changed\n", stats->chown);
     }
     if (stats->chmod) {
-        fprintf(stream,"%8d file chmod bits changed\n", stats->chown);
+        fprintf(stream,"%8lld file chmod bits changed\n", stats->chmod);
     }
     if (stats->times) {
-        fprintf(stream,"%8d file atime/mtime changed\n", stats->chown);
+        fprintf(stream,"%8lld file atime/mtime changed\n", stats->times);
     }
     if (stats->read_errors) {
         fprintf(stream, "%8d errors on read\n", stats->read_errors);
@@ -1110,7 +1110,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         ret=-1;
                 } else {
                         if (itemize>1) item("CO", to, target);
-                        opers.chown++;
+                        atomic_fetch_add(&opers.chown,1);
                 }
         }
 
@@ -1123,7 +1123,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         ret=-1;
                 } else {
                         if (itemize>2) item("CH", to, target);
-                        opers.chmod++;
+                        atomic_fetch_add(&opers.chmod,1);
                 }
         }
                 
@@ -1151,7 +1151,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         ret=-1;
                 } else {
                         if (itemize) item("TI", to, target);
-                        opers.times++;
+                        atomic_fetch_add(&opers.times,1);
                 }
         }
 
