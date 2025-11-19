@@ -1331,7 +1331,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         if (delete) remove_old_entries(from, to);
 
         /* Loop through the source directory entries */
-        for(i=0;i<from->entries && opers.a_write_errors==0; i++) {
+        for(i=0; i<from->entries; i++) {
 	        Entry *fentry=&from->array[i];
 	        Entry *tentry=NULL;
 	    
