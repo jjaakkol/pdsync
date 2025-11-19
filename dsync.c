@@ -109,14 +109,14 @@ typedef struct LinkStruct {
 static Link **link_htable=NULL;
 static int hash_size=1009;
 
-enum { 
-        ATIME_PRESERVE=255, 
-        PRIVACY=256, 
+enum {
+        ATIME_PRESERVE=255,
+        PRIVACY=256,
         DELETE_ONLY=257,
         THREADS=258,
         SYNC_TAG=259,
         SYNC_TAG_NAME=260,
-        DEBUG=261,
+	DEBUG=261,
         CHECK=262
 };
 
@@ -150,7 +150,7 @@ static struct option options[]= {
         { "sync-tag-name",   1, NULL, SYNC_TAG_NAME },
         { "debug",           0, NULL, DEBUG },
         { "check",           0, NULL, CHECK },
-        { NULL, 0, NULL, 0 }       
+        { NULL, 0, NULL, 0 }
 };
 
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
@@ -292,8 +292,9 @@ static int parse_options(int argc, char *argv[]) {
                 }
         case SYNC_TAG_NAME: sync_tag_name=optarg; break;
         case SYNC_TAG: sync_tag=optarg; break;
-        case DEBUG: debug++; fprintf(stderr,"Debug: %d\n",debug); break; 
-	case 'a': 
+        case DEBUG: debug++; fprintf(stderr,"Debug: %d\n",debug); break;
+	case CHECK: check=1; break;
+	case 'a':
 	    recursive=1;
 	    preserve_permissions=1;
 	    preserve_owner=1;
@@ -1226,9 +1227,8 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         show_error_dir("Skipping source directory in %s%s\n", from, target);
                         skip_entry(from, fentry);
                 } else if (recursive) {
-	                // All checks turned out green: we can and should recurse to subdirectory
-                        // It is submitted as first so that complete directories can be finished and tagged sooner
-                        submit_job_first(from, fentry, to, target, 0, dsync);
+	                // All checks turned out green: submit a job to sync the subdirectory
+                        submit_job(from, fentry, to, target, 0, dsync);
                         goto out;
 	        }
     
@@ -1264,7 +1264,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 goto out;
         }
 
-        /* If we did not start a Job, we can just update the metadata now, */
+        /* If we are here a job was not started and metadata can be synced now */
         sync_metadata(from, fentry, to, target, 0);
 
         int ret=0;
