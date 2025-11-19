@@ -41,6 +41,7 @@ void job_unlock(void) {
 
 // If Directory's Job's have been done, release its last job to queue
 // Also do this to parent directories.
+// Mutex must be held.
 void release_jobs(Directory *d) {
         if (d->parent) release_jobs(d->parent);
         d->jobs--;
@@ -154,17 +155,6 @@ JobResult run_any_job()
         scans.idle_threads--;
         mark_job_start(NULL, "idle done");
         return RET_NONE;
-#if 0
-        static _Thread_local JobCallback *last_job=NULL;
-        // First try to run something different than last time to keep IO queue full
-        for (j = pre_scan_list; j; j = j->next)
-        {
-                if ((j->state == SCAN_WAITING || j->state == JOB_WAITING) && j->callback!=last_job) {
-                        last_job=j->callback;
-                        return run_one_job(j);
-                }
-        }
-#endif
 }
 
 Entry *directory_lookup(const Directory *d, const char *name) {
