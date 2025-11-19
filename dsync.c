@@ -1277,150 +1277,144 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 }
 
 int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {
-    Directory *from=NULL;
-    Directory *to=NULL;
-    int i;
-    int ret=-1;
-    int tolen=strlen(target);
-    char todir[MAXLEN];
+        Directory *from=NULL;
+        Directory *to=NULL;
+        int i;
+        int ret=-1;
+        int tolen=strlen(target);
+        char todir[MAXLEN];
 
-    assert(parent_fentry);
+        assert(parent_fentry);
 
-    set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
-    strncpy(todir,target,sizeof(todir)-1);
+        set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
+        strncpy(todir,target,sizeof(todir)-1);
 
-    // Check if we have a already tagged directory and skip it.
-    if (sync_tag) {
-        int fd=dir_openat(to_parent, target);
-        if (fd>=0) {
-                char buf[256];
-                size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
-                if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
-                        item("TAGGED", to_parent, target);
-                        scans.dirs_skipped++;
-                        close(fd);
-                        return 0;
+        // Check if we have a already tagged directory and skip it.
+        if (sync_tag) {
+                int fd=dir_openat(to_parent, target);
+                if (fd>=0) {
+                        char buf[256];
+                        size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
+                        if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
+                                item("TAGGED", to_parent, target);
+                                scans.dirs_skipped++;
+                                close(fd);
+                                return 0;
+                        }
                 }
+                close(fd);
         }
-        close(fd);
-    }
 
-    from=scan_directory(from_parent, parent_fentry);
-    if (from==NULL) {
-        item("ERROR", from_parent, parent_fentry->name);
-	opers.read_errors++;
-	goto fail;
-    }
+        from=scan_directory(from_parent, parent_fentry);
+        if (from==NULL) {
+                item("ERROR", from_parent, parent_fentry->name);
+	        opers.read_errors++;
+	        goto fail;
+        }
 
-    // We always have a parent_fentry, since that is where we are copying files from,
-    // but the directory we are copying to might be just created.
-    // FIXME this is a memory leak 
-    Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
-    if (parent_tentry==NULL) {
-        parent_tentry=my_calloc(1,sizeof(Entry));
-        init_entry(parent_tentry, dir_open(to_parent), my_strdup(target));
-        dir_close(to_parent);
-    }
-    to=scan_directory(to_parent, parent_tentry);
-    if (to==NULL) {
-        item("ERROR", to_parent, target);
-        goto fail;
-    }
+        // We always have a parent_fentry, since that is where we are copying files from,
+        // but the directory we are copying to might be just created.
+        // FIXME this is a memory leak
+        Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
+        if (parent_tentry==NULL) {
+                parent_tentry=my_calloc(1,sizeof(Entry));
+                init_entry(parent_tentry, dir_open(to_parent), my_strdup(target));
+                dir_close(to_parent);
+        }
+        to=scan_directory(to_parent, parent_tentry);
+        if (to==NULL) {
+                item("ERROR", to_parent, target);
+                goto fail;
+        }
     
-    /* Remove old entries first to make space. FIXME: maybe this should be a Job */
-    if (delete) remove_old_entries(from, to);
+        /* Remove old entries first to make space. FIXME: maybe this should be a Job */
+        if (delete) remove_old_entries(from, to);
 
-    /* Loop through the source directory entries */
-    for(i=0;i<from->entries &&
-	    opers.a_write_errors==0
-	    ;i++) {
-	Entry *fentry=&from->array[i];
-	Entry *tentry=NULL;
+        /* Loop through the source directory entries */
+        for(i=0;i<from->entries && opers.a_write_errors==0; i++) {
+	        Entry *fentry=&from->array[i];
+	        Entry *tentry=NULL;
 	    
-	/* Check if this entry should be excluded */
-	if (should_exclude(from,fentry)) {
-                skip_entry(to,fentry);
-                continue;
-        }
+	        /* Check if this entry should be excluded */
+	        if (should_exclude(from,fentry)) {
+                        skip_entry(to,fentry);
+                        continue;
+                }
 
-	snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
+	        snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
 	
-	/* Lookup the existing file */
-	if (to) tentry=directory_lookup(to,todir+tolen+1);		
+	        /* Lookup the existing file */
+	        if (to) tentry=directory_lookup(to,todir+tolen+1);
 
-	/* Check if the already existing target file is OK, 
-	 * or should we remove it */
-	if (tentry) {
-	    if (entry_changed(fentry,tentry)) {
-		if (!S_ISDIR(fentry->stat.st_mode) || 
-		    !S_ISDIR(tentry->stat.st_mode)) {
-                    if ( S_ISREG(fentry->stat.st_mode) && S_ISREG(tentry->stat.st_mode) ) {
-                        // Try to keep existing file.
-                        atomic_fetch_add(&opers.files_updated,1);
-                        if (itemize>1) item("KEEP", to, tentry->name );
-                    } else if (delete || !S_ISDIR(tentry->stat.st_mode)) {
-			/* Entry exists, but it is OK to remove it */
-			remove_entry(to, tentry);
-		    } else {
-			write_error("Directory is in the way. Consider --delete", to, tentry->name);
-			continue;
-		    }
-		}
-	    } else {
-                atomic_fetch_add(&scans.files_synced,1);
-		if (itemize>=2) item("OK",to,todir);
-		continue;
-	    }
-	}
+	        /* Check if the already existing target file is OK, or should we remove it */
+	        if (tentry) {
+	                if (entry_changed(fentry,tentry)) {
+		                if (!S_ISDIR(fentry->stat.st_mode) || 
+		                !S_ISDIR(tentry->stat.st_mode)) {
+                                        if ( S_ISREG(fentry->stat.st_mode) && S_ISREG(tentry->stat.st_mode) ) {
+                                                // Try to keep existing file.
+                                                atomic_fetch_add(&opers.files_updated,1);
+                                                if (itemize>1) item("KEEP", to, tentry->name );
+                                        } else if (delete || !S_ISDIR(tentry->stat.st_mode)) {
+			                        /* Entry exists, but it is OK to remove it */
+			                        remove_entry(to, tentry);
+		                        } else {
+			                        write_error("Directory is in the way. Consider --delete", to, tentry->name);
+			                        continue;
+		                        }
+		                }
+	                } else {
+                                /* No changes to entry, it has been syncred. We don't need to do anything. Continue. */
+                                atomic_fetch_add(&scans.files_synced,1);
+		                if (itemize>=2) item("OK",to,todir);
+		                continue;
+	                }
+	        }
 
-	if (!delete_only) {
-	    /* Check for hard links */
-	    if (fentry->stat.st_nlink>1 &&
-		!S_ISDIR(fentry->stat.st_mode)) {
-		static int link_count_warned=0;
-		/* Found a hard link */
-		if (preserve_hard_links) {
-		    if (check_hard_link(fentry,todir)==0) {
-			/* Hard link was created */
-			continue;
-		    }
-		} else if (!link_count_warned) {
-		    show_warning("Hard links found. Consider --hard-links option",todir);
-		    link_count_warned=1;
-		}
-	    }
+                if (!delete_only) {
+	                /* Check for hard links */
+	                if (fentry->stat.st_nlink>1 &&
+		          !S_ISDIR(fentry->stat.st_mode)) {
+		                static int link_count_warned=0;
+		                /* Found a hard link */
+		                if (preserve_hard_links) {
+		                        if (check_hard_link(fentry,todir)==0) {
+			                        /* Hard link was created */
+			                        continue;
+		                        }
+                                } else if (!link_count_warned) {
+                                        show_warning("Hard links found. Consider --hard-links option",todir);
+                                        link_count_warned=1;
+		                }
+	                }
 
-            /* We could create the target in a different job, but I measured this to be faster */
-            //submit_job(from, fentry, to, fentry->name, i, create_target);
-            create_target(from, fentry, to, fentry->name, i);
+                        /* We could create the target in a different job, but I measured this to be faster */
+                        //submit_job(from, fentry, to, fentry->name, i, create_target);
+                        create_target(from, fentry, to, fentry->name, i);
 
-	    /* Save paths to entries having link count > 1 
-	     * for making hard links */
-	    if (preserve_hard_links &&
-		fentry->stat.st_nlink>1 &&
-		!S_ISDIR(fentry->stat.st_mode)) {
-		save_link_info(fentry,todir);		
-	    }
-	}
-
-    }
+	                /* Save paths to entries having link count > 1 for making hard links */
+	                if (preserve_hard_links && fentry->stat.st_nlink>1 && !S_ISDIR(fentry->stat.st_mode)) {
+		                save_link_info(fentry,todir);
+	                }
+	        }
+        }
 
         /* Job to set the directory metadata bits needs to wait for all create jobs to have finished */
         submit_job(from_parent, parent_fentry, to_parent, target, DSYNC_DIR_WAIT, sync_metadata);
 
-    ret=0;
-    int failed_jobs=0;
+        ret=0;
+        int failed_jobs=0;
 
 fail:
-    set_thread_status(file_path(from_parent,parent_fentry->name), "sync done");
+        set_thread_status(file_path(from_parent,parent_fentry->name), "sync done");
 
-    if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
+        if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
 
-    if (from) d_freedir(from);
-    if (to) d_freedir(to);
+        if (from) d_freedir(from);
+        if (to) d_freedir(to);
 
-    todir[tolen]=0;
-    return ret;
+        todir[tolen]=0;
+        return ret;
 }
 
 int main(int argc, char *argv[]) {
