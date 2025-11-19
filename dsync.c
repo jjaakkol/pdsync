@@ -747,12 +747,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         offset=0; // We have the file open and it is small. Copy it ourselves
                 } else {
                         for (int i=0; i<num_jobs; i++) {
-                                // Optimization: if already have a long queue, don't go through submit and it's locks. 
-                                if (0 && scans.idle_threads==0 && scans.queued - scans.jobs_waiting > threads * 10) {
-                                        copy_regular(from, fentry, to, target, copy_job_size*i);
-                                } else {
-                                        submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
-                                }
+                                submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                         }
                         /* The metadata needs to be synced last. If there are multiple copy jobs, submit it last */
                         if (num_jobs>1) submit_job(from, fentry, to, target, DSYNC_FILE_WAIT, sync_metadata);
