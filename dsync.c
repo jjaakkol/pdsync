@@ -501,7 +501,7 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
         Directory *del=NULL;
         int i;
  
-        del=pre_scan_directory(parent, tentry);
+        del=scan_directory(parent, tentry);
         if (!del) {
                 item("ERROR", parent, tentry->name);
                 goto fail;
@@ -1310,7 +1310,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         close(fd);
     }
 
-    from=pre_scan_directory(from_parent, parent_fentry);
+    from=scan_directory(from_parent, parent_fentry);
     if (from==NULL) {
         item("ERROR", from_parent, parent_fentry->name);
 	opers.read_errors++;
@@ -1326,12 +1326,13 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         init_entry(parent_tentry, dir_open(to_parent), my_strdup(target));
         dir_close(to_parent);
     }
-    to=pre_scan_directory(to_parent, parent_tentry);
+    to=scan_directory(to_parent, parent_tentry);
     if (to==NULL) {
         item("ERROR", to_parent, target);
         goto fail;
     }
     
+    /* Remove old entries first to make space. FIXME: maybe this should be a Job */
     if (delete) remove_old_entries(from, to);
 
     /* Loop through the source directory entries */

@@ -172,7 +172,6 @@ Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *parent, Entry *e);
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);
-Directory *pre_scan_directory(Directory *parent, Entry *dir);
 void start_job_threads(int threads, Job *job);
 void d_freedir(Directory *dir);
 int wait_for_entry(Entry *job);

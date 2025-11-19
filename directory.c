@@ -481,18 +481,3 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         assert(nd->ref>0);
         return nd;
 }
-
-
-/*
- * FIXME rethink this
- * - If it isn't scanned yet we scan it in this thead or wait for it to be scanned
- * - If it is already done we return the result
- * - Otherwise we do the scan
- * - Launch scan jobs for subdirectories
- */
-Directory *pre_scan_directory(Directory *parent, Entry *dir) {
-
-        assert(dir);
-
-        return scan_directory(parent,dir);
-}
