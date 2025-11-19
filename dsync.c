@@ -376,29 +376,6 @@ static void print_scans(const Scans *scans) {
     if (scans->read_directory_miss) {
 	printf("%8d read directory misses\n",scans->read_directory_miss);
     }
-    if (scans->pre_scan_hits) {
-	printf("%8d directory prescan hits\n",scans->pre_scan_hits);
-    }
-    if (scans->pre_scan_wait_hits) {
-	printf("%8d directory prescan wait hits\n",scans->pre_scan_wait_hits);
-    }
-    if (scans->pre_scan_misses) {
-	printf("%8d directory prescan misses\n",scans->pre_scan_misses);
-    }
-    if (scans->pre_scan_too_late>0) {
-        printf("%8d directory prescan too late\n",
-               scans->pre_scan_too_late);
-    }
-    if (scans->pre_scan_dirs) {
-	printf("%8d prescanned directorys\n",scans->pre_scan_dirs);
-    }	
-    if (scans->pre_scan_allocated) {
-	printf("%8d allocated prescan entries\n",scans->pre_scan_allocated);
-    }	
-    if (scans->pre_scan_used!=scans->pre_scan_allocated) {
-	printf("%8d unused prescan entries\n",
-	       scans->pre_scan_allocated-scans->pre_scan_used);
-    }
 }
 
 static void print_opers(FILE *stream, const Opers *stats) {
