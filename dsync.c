@@ -713,7 +713,9 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 goto end;
         }
         to_dfd = dir_open(to);
-        tofd=openat(to_dfd, target, O_RDWR|O_CREAT|O_NOFOLLOW, 0666); // mmap() IO needs RDWR access
+        // Use the source entry's permission bits (mask out file type bits) when creating target.
+        // mmap() IO needs RDWR access
+        tofd = openat(to_dfd, target, O_RDWR | O_CREAT | O_NOFOLLOW,  0777);
         if(tofd<0) {
                 write_error("open", to, target);
                 goto fail;
@@ -817,7 +819,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
         if (offset/copy_job_size == num_jobs-1) {
-                // This is the last job. Show copy done, even if some copy jobs are still running
+                // This is the last job. Show copy done, even if some copy jobs might be still running
                 item("CP",to,target);
                 opers.files_copied++;
         }
@@ -971,6 +973,11 @@ int entry_changed(const Entry *from, const Entry *to) {
         return 0;
     }
 
+    /* Don't recreate FIFOs if not needed .*/
+    if (S_ISFIFO(from->stat.st_mode) && S_ISFIFO(to->stat.st_mode)) {
+        return 0;
+    }
+
     /* If symlink names match don't update it. */
     if (S_ISLNK(from->stat.st_mode) && 
 	S_ISLNK(to->stat.st_mode) &&
@@ -1070,7 +1077,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 goto fail; 
         }
 
-        /* Lookup the existing inode bits */
+        /* Lookup the current inode state. It might have changed during copying and file creation. */
         struct stat to_stat;
         if (fstatat(dfd, target, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
                 write_error("sync_metadata can't stat target (fstatat)", to, target);
@@ -1100,19 +1107,30 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         if (preserve_permissions && 
                 !S_ISLNK(fentry->stat.st_mode) &&
                 fentry->stat.st_mode!=to_stat.st_mode) {
-                int tfd=-1;
 
-                /* This convoluted if tries to work around a Lustre bug: fchmod() can fail with operation not supported */
-                if ( !dryrun && fchmodat(dfd, target, fentry->stat.st_mode, AT_SYMLINK_NOFOLLOW)<0 &&
-                       ( (tfd=openat(dfd, target, O_RDONLY|O_NOFOLLOW)) <0 || fchmod(tfd, fentry->stat.st_mode)<0 )
-                ) {
-                        write_error("fchmodat 2nd attempt", to, target);
-                        ret=-1;
+                // Masked mode bits
+                mode_t masked_mode = fentry->stat.st_mode & (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
+
+                if (!dryrun && fchmodat(dfd, target, masked_mode, AT_SYMLINK_NOFOLLOW)) {
+                        // fchmodat() failed: it can fail with ENOTSUPPORTED. Try again with fchmod()
+                        int chmodfd = -1;
+
+                        if (S_ISFIFO(to_stat.st_mode)) {
+                                fprintf(stderr, "Skipping chmod() for FIFO %s/%s\n", dir_path(to), target);
+                        } else if ((chmodfd = openat(dfd, target, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)) >= 0 &&
+                                   fchmod(chmodfd, masked_mode) == 0) {
+                                /* Second attempt succeeded via fd-based fchmod(). */
+                                if (itemize > 2) item("CH", to, target);
+                                atomic_fetch_add(&opers.chmod, 1);
+                        } else {
+                                write_error("fchmodat()", to, target);
+                                ret = -1;
+                        }
+                        if (chmodfd >= 0) close(chmodfd);
                 } else {
                         if (itemize>2) item("CH", to, target);
                         atomic_fetch_add(&opers.chmod,1);
                 }
-                if (tfd>=0) close(tfd);
         }
                 
         // Access times
@@ -1194,7 +1212,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         if  (errno==ENOENT ) {
 	                        item("MD",to,target);
                                 set_thread_status(file_path(to,target),"mkdir");
-	                        if (!dryrun && (mkdirat(tofd,target,0777)<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
+	                        if (!dryrun && (mkdirat(tofd, target, 0777 )<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
                                         write_error("mkdir", to, target);
                                         goto fail;
 	                        }
@@ -1249,7 +1267,9 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         } else if (S_ISFIFO(fentry->stat.st_mode)) {
 	        if (!preserve_devices) return 0;
 	        item("FI",to,target);
-	        if (!dryrun && mkfifoat(tofd,target,0777)<0) {
+                // Attempt to create FIFO with the same permission bits as source (mask out file type bits)
+                if (!dryrun && mkfifoat(tofd, target,
+                        fentry->stat.st_mode & 0777 )<0) {
                         write_error("mkfifo", to, target);
                         goto fail;
 	        }
