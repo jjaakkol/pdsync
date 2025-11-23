@@ -490,7 +490,7 @@ void print_progress() {
         );
         if (progress>=2) print_opers(tty_stream,&opers);
         if (progress>=3) print_scans(&scans);
-        if (progress>=4) print_jobs(tty_stream);
+        if (progress>=3) print_jobs(tty_stream);
  
         last_synced=files_synced;
         last_bytes=opers.bytes_copied;
@@ -837,7 +837,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         if (offset>=0) {
                 snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
-        } else set_thread_status("copy submit", file_path(to,target));        
+        } else set_thread_status(file_path(to,target),"copy submitted");
         return ret;
  fail:
         item("ERROR", from, target);
@@ -1206,6 +1206,8 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 goto out;
         }
         
+        set_thread_status(file_path(to,target),"create");
+
         if (S_ISDIR(fentry->stat.st_mode)) {
                 struct stat target_stat;
 	        if (fstatat(tofd,target,&target_stat,AT_SYMLINK_NOFOLLOW)<0) {
@@ -1306,7 +1308,6 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
 
         assert(parent_fentry);
 
-        set_thread_status(file_path(from_parent,parent_fentry->name), "sync running");
         strncpy(todir,target,sizeof(todir)-1);
 
         // Check if we have a already tagged directory and skip it.
@@ -1360,6 +1361,8 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
                         skip_entry(to,fentry);
                         continue;
                 }
+
+                set_thread_status(file_path(to,parent_fentry->name), "sync file");
 
 	        snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
 	

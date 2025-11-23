@@ -1,4 +1,6 @@
 #include "dsync.h"
+#include <sys/syscall.h>
+#include <sys/types.h>
 
 typedef enum
 {
@@ -38,6 +40,29 @@ void job_unlock(void) {
         assert(rc == EBUSY);
         pthread_mutex_unlock(&mut);
 }
+
+// Threads status counting, mostly for debugging and progress reporting
+struct ThreadStatus
+{
+        pthread_mutex_t mut;
+        char status[MAXLEN];
+        struct ThreadStatus *prev;
+        struct timespec job_start;
+        pid_t tid;
+        int idle;
+};
+static _Thread_local struct ThreadStatus this_thread = PTHREAD_MUTEX_INITIALIZER;
+static struct ThreadStatus *first_status = NULL;
+
+void set_thread_status_f(const char *file, const char *s, const char *func, int mark)
+{
+        if (progress < 2 && debug==0)
+                return;
+        if (mark) clock_gettime(CLOCK_BOOTTIME, &this_thread.job_start);
+        snprintf(this_thread.status, MAXLEN - 1, "%14s(): %-14s : %.100s", func, s, (file) ? file : "");
+        if (debug) fprintf(stderr, "Debug: %s\n", this_thread.status);
+}
+
 
 // If Directory's Job's have been done, release its last job to queue
 // Also do this to parent directories.
@@ -149,9 +174,12 @@ JobResult run_any_job()
         }
 
         /* No jobs to run. We need to wait and release the lock. */
-        mark_job_start(NULL, "idle");
+        mark_job_start(NULL, NULL);
+        // TODO: remove scans.idle_threads since we want better thread status counting anyway
         scans.idle_threads++;
+        this_thread.idle=1;
         pthread_cond_wait(&cond, &mut);
+        this_thread.idle=0;
         scans.idle_threads--;
         mark_job_start(NULL, "idle done");
         return RET_NONE;
@@ -174,32 +202,14 @@ Entry *directory_lookup(const Directory *d, const char *name) {
     return NULL;    
 }
 
-struct ThreadStatus
-{
-        pthread_mutex_t mut;
-        char status[MAXLEN];
-        struct ThreadStatus *prev;
-        struct timespec job_start;
-};
-static _Thread_local struct ThreadStatus status = PTHREAD_MUTEX_INITIALIZER;
-static struct ThreadStatus *first_status = NULL;
-
-void set_thread_status_f(const char *file, const char *s, const char *func, int mark)
-{
-        if (progress < 3 && debug==0)
-                return;
-        if (mark) clock_gettime(CLOCK_BOOTTIME, &status.job_start);
-        snprintf(status.status, MAXLEN - 1, "%12s():%-12s : %.100s", func, s, (file) ? file : "");
-        if (debug) fprintf(stderr, "Debug: %s\n", status.status);
-}
-
 /* Threads wait in this loop for jobs to run */
 void *job_queue_loop(void *arg)
 {
 
         pthread_mutex_lock(&mut);
-        status.prev = first_status;
-        first_status = &status;
+        this_thread.prev = first_status;
+        first_status = &this_thread;
+        this_thread.tid = (pid_t)syscall(SYS_gettid); // gettid() is Linux specific and is not in older glibcs
         mark_job_start(NULL, "thread started");
         /* Loop until exit() is called*/
         while (1) run_any_job();
@@ -281,32 +291,52 @@ Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char 
         return job;
 }
 
-/* Debugging. Assume mutex is held */
-int print_jobs(FILE *f)
-{
-        int i = 0;
+// Lock should be held, but probably works anyway
+int count_stalled_threads() {
+        int count = 0;
         struct timespec now;
-
         clock_gettime(CLOCK_BOOTTIME, &now);
-        fprintf(f, "Thread: runtime : job\n");
+
         for (struct ThreadStatus *s = first_status; s; s = s->prev)
         {
+                if (s->idle) continue; // Skip idle threads
+                long long idle = (now.tv_sec - s->job_start.tv_sec) * 1000LL +
+                                 (now.tv_nsec - s->job_start.tv_nsec) / 1000000LL;
+                if (idle > 10000) count++;
+        }
+        return count;
+}
+
+// Useful for seeing IO stalls and debugging
+int print_jobs(FILE *f)
+{
+        struct timespec now;
+        clock_gettime(CLOCK_BOOTTIME, &now);
+
+        if (progress>=4) {
+                fprintf(f, "TID     : runtime : job\n");
+        } else if (progress>=3 && count_stalled_threads()>0) {
+                fprintf(f, "TID     : runtime : stalled jobs\n");
+        } else return 0;
+
+        for (struct ThreadStatus *s = first_status; s; s = s->prev)
+        {
+                if (s->idle) continue; /* Skip idle threads */
                 long long idle = (now.tv_sec - s->job_start.tv_sec) * 1000LL +
                                  (now.tv_nsec - s->job_start.tv_nsec) / 1000000LL;
                 if (idle > 10000) {
-                        fprintf(f, "%5d : %5llds  : %s\n", i, idle/1000, s->status);
-                } else fprintf(f, "%5d : %5lldms : %s\n", i, idle, s->status);
-                i++;
+                        fprintf(f, "%7d : %5llds! : %s\n", s->tid, idle/1000, s->status);
+                } else if (progress>=4) {
+                        fprintf(f, "%7d : %5lldms : %s\n", s->tid, idle, s->status);
+                }
         }
         if (progress < 5)
                 return 0;
-        Job *j = first_job;
-        i = 0;
-        while (j)
-        {
-                fprintf(f, "Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n", i++, dir_path(j->from), j->fentry->name, 
+
+        int i=0;
+        for (Job *j=first_job; j; j=j->next, i++) {
+                fprintf(f, "Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n", i, dir_path(j->from), j->fentry->name, 
                         (j->to) ? dir_path(j->to) :"NULL", (j->target) ? j->target : "[NOTARGET]", j->state, j->offset, j->fentry);
-                j = j->next;
         }
         return 0;
 }
