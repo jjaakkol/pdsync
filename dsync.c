@@ -497,6 +497,25 @@ void print_progress() {
         last_ns=now_ns;
 }
 
+// Unlink one target entry, which is not a directory
+int unlink_entry(Directory *parent, Entry *tentry) {
+        int ret=0;
+        const char *name=tentry->name;
+        assert(!S_ISDIR(tentry->stat.st_mode));
+
+        int dfd=dir_open(parent);
+        if (!dryrun && unlinkat(dfd, name, 0)) {
+                write_error("unlink", parent, name);
+                ret=-1;
+        } else  {
+                item("RM",parent,name);
+                opers.entries_removed++;
+        }
+        dir_close(parent);
+        tentry->state=ENTRY_DELETED; // FIXME: this needs a lock
+        return ret;
+}
+
 int remove_hierarchy(Directory *parent, Entry *tentry) {
         struct stat thisdir;
         Directory *del=NULL;
@@ -533,12 +552,9 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
                 }
                 if (S_ISDIR(file.st_mode)) {
                         if (remove_hierarchy(del, &del->array[i])<0) goto fail;
-                } else if (!dryrun && unlinkat(dfd,del->array[i].name,0)<0) {
-                        write_error("unlinkat", del, del->array[i].name);
+                } else if ( unlink_entry(del, &del->array[i]) ) {
                         goto fail; 
                 }
-                item("RM",del,del->array[i].name);
-		opers.entries_removed++;
 	}
 
         item("RD", parent, tentry->name);
@@ -846,25 +862,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         goto end;
 }
 
-/* Remove one entry from a directory */
-int remove_entry(Directory *parent, Entry *tentry) {
-        int ret=0;
-        const char *name=tentry->name;
-        if (S_ISDIR(tentry->stat.st_mode)) {
-                remove_hierarchy(parent, tentry);
-        } else {
-                item("RM",parent,name);
-                int dfd=dir_open(parent);
-                if (!dryrun && unlinkat(dfd, name, 0)) {
-                        write_error("unlink", parent, name);
-                        ret=-1;
-                } else opers.entries_removed++;
-                dir_close(parent);
-        }
-        tentry->state=ENTRY_DELETED; // FIXME: this needs a lock
-        return ret;
-}
-
 static int should_exclude(const Directory *from, const Entry *entry) {
     Exclude *e=exclude_list;
 
@@ -875,20 +872,6 @@ static int should_exclude(const Directory *from, const Entry *entry) {
 	    return 1;
 	}
 	e=e->next;
-    }
-    return 0;
-}
-
-/* Remove missing files and directories which exist in to but not in from */
-int remove_old_entries(Directory *from,
-		       Directory *to) {
-    int to_i=0;
-
-    for(to_i=0; to && to_i < to->entries; to_i++) {	
-	if ( directory_lookup(from,to->array[to_i].name)==NULL) {
-	    /* Entry no longer exists in from and should be removed if --delete is in effect */
-	    remove_entry(to, &to->array[to_i]);
-	}
     }
     return 0;
 }
@@ -1348,8 +1331,16 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
                 goto fail;
         }
     
-        /* Remove old entries first to make space. FIXME: maybe this should be a Job */
-        if (delete) remove_old_entries(from, to);
+        // Schedule jobs or just remove missing files and directories if --delete is used
+        for(int to_i=0; delete && to && to_i < to->entries; to_i++) {
+	        if ( directory_lookup(from,to->array[to_i].name)==NULL) {
+                        if (S_ISDIR(to->array[to_i].stat.st_mode)) {
+                                remove_hierarchy(to, &to->array[to_i]);
+                        } else {
+	                        unlink_entry(to, &to->array[to_i]);
+                        }
+                }
+	}
 
         /* Loop through the source directory entries */
         for(i=0; i<from->entries; i++) {
@@ -1380,7 +1371,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
                                                 if (itemize>1) item("KEEP", to, tentry->name );
                                         } else if (delete || !S_ISDIR(tentry->stat.st_mode)) {
 			                        /* Entry exists, but it is OK to remove it */
-			                        remove_entry(to, tentry);
+			                        unlink_entry(to, tentry);
 		                        } else {
 			                        write_error("Directory is in the way. Consider --delete", to, tentry->name);
 			                        continue;
