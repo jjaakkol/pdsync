@@ -153,16 +153,15 @@ extern int debug;
 
 #define DEBUG(...) do { \
     if (debug > 0) { \
-        fprintf(stderr, "[%s:%s():%d] ", __FILE__, __func__, __LINE__); \
+        fprintf(stderr, "[%-12s:%20s():%4d] ", __FILE__, __func__, __LINE__); \
         fprintf(stderr, __VA_ARGS__); \
     } \
 } while(0)
 
-// scandir.c
-// submit_job() flags
 #define DSYNC_FILE_WAIT -123 // Wait for all jobs to attached to From Entry to finish before starting job
 #define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
-Job *submit_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+Job *submit_job_real(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+#define submit_job(from, source, to, target, offset, callback)  do { DEBUG("submit_job callback=%s\n",#callback); submit_job_real(from, source, to, target, offset, callback); } while(0)
 Job *submit_job_first(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 void job_release(Job *j);
 void job_lock();
@@ -172,7 +171,7 @@ Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *parent, Entry *e);
 void show_error(const char *why, const char *file);
 Entry *init_entry(Entry * entry, int dfd, char *name);
-void start_job_threads(int threads, Job *job);
+void start_job_threads(int threads);
 void d_freedir(Directory *dir);
 int wait_for_entry(Entry *job);
 const char *dir_path(const Directory *d);

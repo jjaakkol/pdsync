@@ -60,27 +60,27 @@ void set_thread_status_f(const char *file, const char *s, const char *func, int 
                 return;
         if (mark) clock_gettime(CLOCK_BOOTTIME, &this_thread.job_start);
         snprintf(this_thread.status, MAXLEN - 1, "%14s(): %-14s : %.100s", func, s, (file) ? file : "");
-        if (debug) fprintf(stderr, "Debug: %s\n", this_thread.status);
+        DEBUG("status: %s\n", this_thread.status);
 }
 
-
-// If Directory's Job's have been done, release its last job to queue
-// Also do this to parent directories.
-// Mutex must be held.
-void release_jobs(Directory *d) {
-        if (d->parent) release_jobs(d->parent);
-        d->jobs--;
-        if (debug) fprintf(stderr,"release_job: %d/%d left: %s (%p)\n", d->jobs, scans.queued, dir_path(d), d->last_job);    
-        if (d->jobs==0 && d->last_job) {
-                d->last_job->next=first_job;
-                first_job=d->last_job;
-                if (last_job==NULL) last_job=first_job;
-                d->last_job=NULL;
+// Helper function to release DSYNC_DIR_WAIT jobs
+void release_jobs(Directory *to) {
+        if (!to) return;
+        to->jobs--;
+        release_jobs(to->parent); // Recursion because the leaf job needs to be done first
+        DEBUG("release_job: %d/%d left: %s (%p)\n", to->jobs, scans.jobs_waiting, dir_path(to), to->last_job);
+        assert(to->jobs>=0);
+        if (to->jobs==1 && to->last_job) {
                 scans.jobs_waiting--;
+                DEBUG("releasing job: %d left: %s\n", scans.jobs_waiting, dir_path(to->last_job->to));
+                to->last_job->next=first_job;
+                first_job=to->last_job;
+                if (last_job==NULL) last_job=first_job;
+                to->last_job=NULL;
         }
 }
 
-/* Remove job from queue's and free its resources. Mutex must be held. */
+// Remove job from queue's and free its resources. Mutex must be held.
 int free_job(Job *job)
 {
         assert(job);
@@ -88,14 +88,13 @@ int free_job(Job *job)
         assert(job->state == JOB_READY);
         assert(job->magick == 0x10b10b);
 
-        if (debug) fprintf(stderr,"Debug: free_job  from=%p %s\n", job->from,  file_path(job->from, job->fentry->name));
+        DEBUG("free_job  to='%s' -> '%s'\n", dir_path(job->to), job->target ? "/NULL/" : job->target);
         /* Remove job from Job queue */
         scans.queued--;
         if (first_job == job) {
                 first_job = job->next;
                 if (first_job==NULL) last_job=NULL;
-        } else
-        {
+        } else {
                 Job *prev = first_job;
                 assert(prev->magick == 0x10b10b);
                 while (prev->next != job)
@@ -103,11 +102,8 @@ int free_job(Job *job)
                 assert(prev); // the job must be in the list
                 prev->next = job->next;
                 if (job==last_job) last_job=prev;
-        } 
-        if (job->fentry->dir) {
-                if (debug) fprintf(stderr,"Debug: releasing job: from=%p %s\n", job->from,  dir_path(job->fentry->dir));
-                release_jobs(job->fentry->dir);
-        } else if (job->from) release_jobs(job->from);
+        }
+        release_jobs(job->to);
         if (job->from) d_freedir(job->from);
         if (job->to) d_freedir(job->to);
         int ret = job->ret;
@@ -135,11 +131,11 @@ JobResult run_one_job(Job *j)
                 if (j->fentry->state!=ENTRY_FAILED) {
                         /* No point in running job if there was an error */
                         j->state = JOB_RUNNING;
-                        mark_job_start(file_path(j->from, j->fentry->name), "job start");
+                        mark_job_start(file_path(j->to, j->target), "job start");
                         pthread_mutex_unlock(&mut);
                         j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                         pthread_mutex_lock(&mut);
-                        mark_job_start(file_path(j->from, j->fentry->name), "job ended");
+                        mark_job_start(file_path(j->to, j->target), "job ended");
                 }
                 j->state = JOB_READY;
                 JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
@@ -174,7 +170,7 @@ JobResult run_any_job()
         }
 
         /* No jobs to run. We need to wait and release the lock. */
-        mark_job_start(NULL, NULL);
+        mark_job_start(NULL, "idle");
         // TODO: remove scans.idle_threads since we want better thread status counting anyway
         scans.idle_threads++;
         this_thread.idle=1;
@@ -233,15 +229,9 @@ Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *targe
 
         //for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next)
         //        assert(queue_job->magick == 0x10b10b);
-        if (job->from)
-                dir_claim(job->from);
-        if (job->to)
-                dir_claim(job->to);
-        for(Directory *d=job->from; d; d=d->parent) d->jobs++;
-        if (fentry->dir) {
-                fentry->dir->jobs++;
-                dir_claim(fentry->dir);
-        }
+        if (job->from) dir_claim(job->from);
+        if (job->to) dir_claim(job->to);
+        for (Directory *d=to; d; d=d->parent) d->jobs++; // Count target directory running jobs until dir root
 
         scans.jobs++;
         if (++scans.queued > scans.maxjobs)
@@ -250,14 +240,24 @@ Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         return job;
 }
 
-Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
-        DEBUG("submit_job: from=%s, fentry=%s to=%s, target=%s, offset=%ld callback=%p\n", dir_path(from), fentry->name, dir_path(to), target, offset, callback);
+Job *submit_job_real(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
+        DEBUG("from=%s, fentry=%s to=%s, target=%s, offset=%ld callback=%p\n", (from) ? from->name : "/no from/", fentry->name, dir_path(to), (target) ? target :"/no target/", offset, callback);
         job_lock();
         Job *job=create_job(from, fentry, to, target, offset, callback);
+        if (to) DEBUG("submit_job: %d jobs on dir %s\n", to->jobs, dir_path(to));
+        
+        // DSYNC_DIR_WAIT means wait for other jobs in dir to finish, unless there is none to wait for
         if (offset==DSYNC_DIR_WAIT) {
-                assert(fentry && fentry->dir && fentry->dir->last_job==NULL);
-                fentry->dir->last_job=job;
-                scans.jobs_waiting++;
+                assert(to && to->last_job==NULL);
+                if (to->jobs==1) {
+                        DEBUG("DIR_WAIT start immediately %s\n",dir_path(to));
+                        job->next=first_job;
+                        first_job=job;
+                        if (last_job==NULL) last_job=first_job;
+                } else {
+                        to->last_job=job;
+                        scans.jobs_waiting++;
+                }
         } else if (first_job==NULL) {
                 first_job=last_job=job;
         } else {
@@ -265,6 +265,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
                 last_job->next=job;
                 last_job=job;
         }
+
         /*for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next) {
                 assert(queue_job->magick == 0x10b10b);
         }*/
@@ -274,7 +275,7 @@ Job *submit_job(Directory *from, Entry *fentry, Directory *to, const char *targe
 }
 
 Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
-        DEBUG("from=%s, fentry=%s to=%s, target=%s, offset=%ld callback=%p\n", dir_path(from), fentry->name, dir_path(to), target, offset, callback);
+        DEBUG("from=%s, fentry=%s to=%s, target=%s, offset=%ld callback=%p\n", dir_path(from), fentry->name, (to)? to->name : "NULL", target, offset, callback);
         job_lock();
         Job *job=create_job(from, fentry, to, target, offset, callback);
         if (first_job==NULL) {
@@ -307,6 +308,14 @@ int count_stalled_threads() {
         return count;
 }
 
+void print_queue(FILE *f) {
+        int i=0;
+        for (Job *j=first_job; j; j=j->next, i++) {
+                fprintf(f, "Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n", i, dir_path(j->from), j->fentry->name, 
+                        (j->to) ? dir_path(j->to) :"NULL", (j->target) ? j->target : "[NOTARGET]", j->state, j->offset, j->fentry);
+        }
+}
+
 // Useful for seeing IO stalls and debugging
 int print_jobs(FILE *f)
 {
@@ -316,7 +325,7 @@ int print_jobs(FILE *f)
         if (progress>=4) {
                 fprintf(f, "TID     : runtime : job\n");
         } else if (progress>=3 && count_stalled_threads()>0) {
-                fprintf(f, "TID     : runtime : stalled jobs\n");
+                fprintf(f, "TID     : runtime : slow jobs or stalled\n");
         } else return 0;
 
         for (struct ThreadStatus *s = first_status; s; s = s->prev)
@@ -330,18 +339,10 @@ int print_jobs(FILE *f)
                         fprintf(f, "%7d : %5lldms : %s\n", s->tid, idle, s->status);
                 }
         }
-        if (progress < 5)
-                return 0;
-
-        int i=0;
-        for (Job *j=first_job; j; j=j->next, i++) {
-                fprintf(f, "Job %d: %s%s -> %s%s state=%d, offset=%ld, fentry=%p\n", i, dir_path(j->from), j->fentry->name, 
-                        (j->to) ? dir_path(j->to) :"NULL", (j->target) ? j->target : "[NOTARGET]", j->state, j->offset, j->fentry);
-        }
         return 0;
 }
 
-void start_job_threads(int job_threads, Job *job)
+void start_job_threads(int job_threads)
 {
         pthread_t threads[job_threads];
         long long last_ns = 0;

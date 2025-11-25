@@ -153,7 +153,7 @@ static struct option options[]= {
         { NULL, 0, NULL, 0 }
 };
 
-int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
+JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
 JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const char *target, off_t offset);
 
 static void show_version() {
@@ -516,14 +516,33 @@ int unlink_entry(Directory *parent, Entry *tentry) {
         return ret;
 }
 
-int remove_hierarchy(Directory *parent, Entry *tentry) {
+JobResult remove_directory(Directory *ignored, Entry *tentry, Directory *del, const char *not_used, off_t depth) {
+        assert(tentry->dir && del==tentry->dir);
+        set_thread_status(file_path(tentry->dir, tentry->name), "rmdir");
+        int ret=0;
+        int dfd=-1;
+        if (!dryrun) {
+                if ( (dfd=dir_open(del->parent))<0 || unlinkat(dfd, tentry->name, AT_REMOVEDIR )<0) {
+	                write_error("rmdir", tentry->dir, tentry->name);
+                        goto fail; 
+                }
+        }
+        item("RD", tentry->dir, tentry->name);
+        opers.dirs_removed++;
+        fail:
+        if (dfd>=0) dir_close(del->parent);
+        return ret;
+}
+
+JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, const char *ignored_too, off_t depth) {
         struct stat thisdir;
         Directory *del=NULL;
         int i;
  
-        del=scan_directory(parent, tentry);
+        // TODO: we don't need scan directory, we just need to know which entries are files and which are directories
+        del=scan_directory(to, tentry);
         if (!del) {
-                item("ERROR", parent, tentry->name);
+                write_error("scan_directory", to, tentry->name);
                 goto fail;
         }
         int dfd=dir_open(del);
@@ -533,46 +552,31 @@ int remove_hierarchy(Directory *parent, Entry *tentry) {
         	thisdir.st_ino==source_stat.st_ino) {
         	/* This can happen when doing something like 
 	        * dsync /tmp/foo/bar /tmp/foo */
-        	show_warning("Skipping removal of source directory", dir_path(parent));
+        	show_warning("Skipping removal of source directory", dir_path(to));
 	        goto fail;
         }
         if (thisdir.st_dev==target_stat.st_dev &&
 	        thisdir.st_ino==target_stat.st_ino) {
 	        /* This should only happen on badly screwed up filesystems */
-	        show_warning("Skipping removal of target directory (broken filesystem?).\n", dir_path(parent));
+	        show_warning("Skipping removal of target directory (broken filesystem?).\n", dir_path(to));
 	        goto fail;
         }
   
         for(i=0;i<del->entries;i++) {
-                struct stat file;
-                set_thread_status(file_path(parent, del->array[i].name), "unlinking");
-                if (fstatat(dfd,del->array[i].name,&file,AT_SYMLINK_NOFOLLOW)<0) {
-                        write_error("fstatat", del, del->array[i].name);
-                        goto fail;
-                }
-                if (S_ISDIR(file.st_mode)) {
-                        if (remove_hierarchy(del, &del->array[i])<0) goto fail;
+                set_thread_status(file_path(to, del->array[i].name), "unlinking");
+                if (S_ISDIR(del->array[i].stat.st_mode)) {
+                        submit_job_first(NULL, &del->array[i], del, NULL, depth+1, remove_hierarchy);
                 } else if ( unlink_entry(del, &del->array[i]) ) {
                         goto fail; 
                 }
 	}
-
-        item("RD", parent, tentry->name);
-        int pfd=-1;
-        if (!dryrun) {
-                pfd=dir_open(parent);
-                if (unlinkat(pfd, tentry->name, AT_REMOVEDIR )<0) {
-	                write_error("rmdir", parent, tentry->name);
-                        goto fail; 
-                }
-        }
-        opers.dirs_removed++;
-
+        submit_job(NULL, tentry, del, ".", DSYNC_DIR_WAIT, remove_directory); // del is freed by remove_directory
         int ret=0;
+
  cleanup:
         if (dfd>=0) dir_close(del);
-        if (pfd>=0) dir_close(parent);
         if (del) d_freedir(del);
+
         return ret;
 
  fail:
@@ -1056,8 +1060,11 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
 
         int dfd=dir_open(to);
         if (dfd==-1) {
-                show_error_dir("open parent", to, fentry->name);
+                show_error("open()", dir_path(to));
                 goto fail; 
+        }
+        if (target==NULL) {
+                target="."; // Target the directory itself. 
         }
 
         /* Lookup the current inode state. It might have changed during copying and file creation. */
@@ -1231,7 +1238,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                // All checks turned out green: submit a job to sync the subdirectory
-                        submit_job(from, fentry, to, target, 0, dsync);
+                        submit_job(from, fentry, to, target, 0, sync_directory);
                         goto out;
 	        }
     
@@ -1270,7 +1277,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         }
 
         /* If we are here a job was not started and metadata can be synced now */
-        sync_metadata(from, fentry, to, target, 0);
+        sync_metadata(NULL, fentry, to, target, 0);
 
         int ret=0;
         out: 
@@ -1281,19 +1288,15 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         goto out;
 }
 
-int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {
+JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset);
+
+JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {
         Directory *from=NULL;
         Directory *to=NULL;
-        int i;
-        int ret=-1;
-        int tolen=strlen(target);
-        char todir[MAXLEN];
 
         assert(parent_fentry);
 
-        strncpy(todir,target,sizeof(todir)-1);
-
-        // Check if we have a already tagged directory and skip it.
+        // Check if we have a already tagged a directory and can just skip it
         if (sync_tag) {
                 int fd=dir_openat(to_parent, target);
                 if (fd>=0) {
@@ -1317,7 +1320,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         }
 
         // We always have a parent_fentry, since that is where we are copying files from,
-        // but the directory we are copying to might be just created.
+        // but the directory we are copying to might just be created.
         // FIXME this is a memory leak
         Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
         if (parent_tentry==NULL) {
@@ -1335,15 +1338,30 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         for(int to_i=0; delete && to && to_i < to->entries; to_i++) {
 	        if ( directory_lookup(from,to->array[to_i].name)==NULL) {
                         if (S_ISDIR(to->array[to_i].stat.st_mode)) {
-                                remove_hierarchy(to, &to->array[to_i]);
+                                submit_job_first(NULL, &to->array[to_i], to, NULL, offset+1, remove_hierarchy);
                         } else {
 	                        unlink_entry(to, &to->array[to_i]);
                         }
                 }
 	}
 
+        submit_job(from, parent_fentry, to, target, DSYNC_DIR_WAIT, sync_files);
+
+fail:
+        if (from) d_freedir(from);
+        if (to) d_freedir(to);
+
+        return 0;
+}
+
+JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset) {
+        int tolen=strlen(target);
+        char todir[MAXLEN];
+
+        strncpy(todir,target,sizeof(todir)-1);
+
         /* Loop through the source directory entries */
-        for(i=0; i<from->entries; i++) {
+        for(int i=0; i<from->entries; i++) {
 	        Entry *fentry=&from->array[i];
 	        Entry *tentry=NULL;
 	    
@@ -1353,7 +1371,7 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
                         continue;
                 }
 
-                set_thread_status(file_path(to,parent_fentry->name), "sync file");
+                set_thread_status(file_path(to, fentry->name), "sync file");
 
 	        snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
 	
@@ -1414,21 +1432,9 @@ int dsync(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, co
         }
 
         /* Job to set the directory metadata bits needs to wait for all create jobs to have finished */
-        submit_job(from_parent, parent_fentry, to_parent, target, DSYNC_DIR_WAIT, sync_metadata);
+        submit_job(from, parent_fentry, to, NULL, DSYNC_DIR_WAIT, sync_metadata);
 
-        ret=0;
-        int failed_jobs=0;
-
-fail:
-        set_thread_status(file_path(from_parent,parent_fentry->name), "sync done");
-
-        if (failed_jobs>0) fprintf(stderr,"SD level %ld: %d failed subjobs.\n",offset,failed_jobs);
-
-        if (from) d_freedir(from);
-        if (to) d_freedir(to);
-
-        todir[tolen]=0;
-        return ret;
+        return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -1491,10 +1497,10 @@ int main(int argc, char *argv[]) {
         fstat(tfd,&target_stat);
 
         init_entry(&source_root, sfd, s_frompath);
-        Job *job=submit_job(NULL, &source_root, NULL, s_topath, 0, dsync);
+        submit_job(NULL, &source_root, NULL, s_topath, 0, sync_directory);
 
         // start the threads, job queue and wait the submitted job to finish
-        start_job_threads(threads, job);
+        start_job_threads(threads);
 
     if (opers.no_space && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);

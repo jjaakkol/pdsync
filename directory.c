@@ -146,7 +146,7 @@ const char *file_path(const Directory *d, const char *f)
         return buf;
 }
 
-/* Free a directory structure, including its finished jobs */
+// Free a directory structure if it refcount is zero. Dire mutex must be held.
 static void d_freedir_locked(Directory *dir)
 {
         assert(dir->magick == 0xDADDAD);
@@ -154,7 +154,9 @@ static void d_freedir_locked(Directory *dir)
         assert(dir->parent_entry && dir->parent_entry->dir==dir);
 
         atomic_fetch_add(&dir->ref, -1);
-        if (dir->ref>0) return; 
+        DEBUG("refcount %s %d\n", dir_path(dir), dir->ref);
+
+        if (dir->ref>0) return;
         assert(dir->ref==0);
         assert(dir->fdrefs==0);
         assert(dir->last_job==NULL);
@@ -217,13 +219,14 @@ static int dir_openat_locked(Directory *parent, const char *name)
         return dfd;
 }
 
-/* gets a file handle to Directory, possibly reopening it */
+// gets a file handle to Directory, possibly reopening it
+// Keeps reference counts the fd and the dir
 static int dir_open_locked(Directory *d)
 {
         assert(d->magick==0xDADDAD);
         assert(d->ref>0);
 
-        if (d->fdrefs==0) atomic_fetch_add(&d->ref,1); /* We reference count claim a directory, which has a open fd claim */
+        if (d->fdrefs==0) atomic_fetch_add(&d->ref,1);
         atomic_fetch_add(&d->fdrefs, 1);
         if (d->fd < 0)
         {
@@ -319,7 +322,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 case ENTRY_CREATED:  // FIXME dsync() does not init parent_entry. It probably should
                 case ENTRY_INIT: break;
                 case ENTRY_READ_QUEUE: break;
-                case ENTRY_READING: job_unlock(); return RET_RUNNING;  /* Some other thread is already reding it */
+                case ENTRY_READING: job_unlock(); return RET_RUNNING;  /* Some other thread is already reading it */
                 case ENTRY_READ_READY: 
                 case ENTRY_SCAN_QUEUE:
                 case ENTRY_SCAN_RUNNING:
@@ -383,7 +386,7 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         nd->parent = parent;
         nd->name = my_strdup(name);
         nd->parent_entry = parent_entry;
-        nd->ref = 1; /* The directory is now referenced once */
+        nd->ref = 1; // Caller claims one reference by default
         nd->magick = 0xDADDAD;
         nd->fd = -1;
         nd->entries=entries;
@@ -445,11 +448,18 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         return RET_FAILED;
 }
 
-/* scan_directory can be called from multiple threads */
+// FIXME: scan_directory needs to be split to smaller jobs
+// Could be done while splitting dsync()
 Directory *scan_directory(Directory *parent, Entry *entry)
 {
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
+
+        if (entry->state==ENTRY_SCAN_READY) {
+                // Already scanned, but called gets a new reference
+                entry->dir->ref++;
+                return entry->dir;
+        }
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
         while(read_directory(parent, entry, NULL, entry->name, 0)==RET_RUNNING) {
@@ -478,6 +488,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
 
         set_thread_status(file_path(parent, entry->name), "scandir done");
         dir_close(nd);
+        entry->state=ENTRY_SCAN_READY;
         assert(nd->ref>0);
         return nd;
 }
