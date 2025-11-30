@@ -108,7 +108,7 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
         return entry;
 }
 
-const char *dir_path(Directory *d)
+const char *dir_path(const Directory *d)
 {
         _Thread_local static char buf[MAXLEN];
         _Thread_local static int len;
@@ -131,7 +131,7 @@ const char *dir_path(Directory *d)
         return buf;
 }
 
-const char *file_path(Directory *d, const char *f)
+const char *file_path(const Directory *d, const char *f)
 {
         _Thread_local static char buf[MAXLEN];
         if (privacy && d && d->parent_entry && dir_stat(d)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
@@ -323,7 +323,6 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 case ENTRY_READ_QUEUE: break;
                 case ENTRY_READING: job_unlock(); return RET_RUNNING;  /* Some other thread is already reading it */
                 case ENTRY_READ_READY: 
-                case ENTRY_SCAN_QUEUE:
                 case ENTRY_SCAN_RUNNING:
                 case ENTRY_SCAN_READY:
                         goto out; // Already done 

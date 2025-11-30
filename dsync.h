@@ -32,7 +32,6 @@ typedef enum { ENTRY_CREATED,
                 ENTRY_READ_QUEUE,
                 ENTRY_READING,
                 ENTRY_READ_READY,
-                ENTRY_SCAN_QUEUE,
                 ENTRY_SCAN_RUNNING,
                 ENTRY_SCAN_READY,
                 ENTRY_DELETED,
@@ -45,7 +44,7 @@ typedef struct {
         char *name;
         struct stat _stat;
         char *link;
-        struct DirectoryStruct *dir;    // Parent directory, if any. TODO try to get rid of this
+        struct DirectoryStruct *dir;            // Subdirectory if this is a directory
 } Entry;
 
 // We keep the fd's of directories in a LRU cache to avoid closing and opening needlessly
@@ -169,8 +168,8 @@ Entry *init_entry(Entry * entry, int dfd, char *name);
 void start_job_threads(int threads);
 void d_freedir(Directory *dir);
 int wait_for_entry(Entry *job);
-const char *dir_path(Directory *d);
-const char *file_path(Directory *d, const char *f);
+const char *dir_path(const Directory *d);
+const char *file_path(const Directory *d, const char *f);
 void show_error_dir(const char *message, Directory *parent, const char *file);
 JobResult run_one_job(Job *j);
 JobResult run_any_job();
@@ -185,20 +184,12 @@ int dir_openat(Directory *d, const char *f);
 void d_freedir(Directory *dir);
 void dir_claim(Directory *dir);
 
-static inline const struct stat *entry_stat(Entry *e) {
+static inline const struct stat *entry_stat(const Entry *e) {
         assert(e);
-        if (e->state==ENTRY_CREATED) {
-                assert(e->dir);
-                if (dir_open(e->dir)>=0) {
-                        init_entry(e, e->dir->fd, e->name);
-                        dir_close(e->dir);
-                } else {
-                        e->state=ENTRY_FAILED;
-                }
-        }
+        if (e->state==ENTRY_FAILED) return NULL;
         return &e->_stat;
 }
-static inline const struct stat *dir_stat(Directory *d) { 
+static inline const struct stat *dir_stat(const Directory *d) { 
         return entry_stat(d->parent_entry);
 }
 static inline int entry_isdir(const Directory *d, int i) {
