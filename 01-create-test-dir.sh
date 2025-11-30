@@ -5,8 +5,8 @@ make_random_files() {
     echo "random files for $dir"
     [ -z "$dir" ] && { echo "Usage: make_random_dir <dirname>"; return 1; }
     mkdir -p "$dir"
-    for i in $(seq 1 512); do
-        openssl rand 4096 > $(mktemp $dir/file.XXXXXX)
+    for i in $(seq 001 512); do
+        openssl rand 4096 > $dir/testfile-$i
     done
 }
 
