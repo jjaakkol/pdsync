@@ -89,6 +89,7 @@ typedef struct {
         // Errors and warnings
         atomic_llong sockets_warned;
         atomic_llong devs_warned;
+        atomic_llong chown_warned;
         atomic_llong read_errors;
         atomic_llong write_errors;
         atomic_llong error_espace;
@@ -266,7 +267,10 @@ static int parse_options(int argc, char *argv[]) {
 	case 'o': preserve_owner=1; break;
 	case 'g': preserve_group=1; break;
 	case 't': preserve_time=1; break;
-	case 'D': preserve_devices=1; break;	    
+	case 'D': preserve_devices=1;
+                fprintf(stderr,"Warning: preserving devices is not implemented yet.\n");
+                exit(1);
+                break;
 	case 'x': one_file_system=1; break;
 	case 'U': update_all=1; break;
 	case 'S': preserve_sparse=1; break;
@@ -290,7 +294,7 @@ static int parse_options(int argc, char *argv[]) {
 	case 'a':
 	    recursive=1;
 	    preserve_permissions=1;
-	    preserve_owner=1;
+	    if (geteuid()==0) preserve_owner=1;  // Only preserve owner if running as root
 	    preserve_group=1;
 	    preserve_time=1;
 	    preserve_devices=1;
@@ -440,6 +444,9 @@ static void print_opers(FILE *stream, const Opers *stats) {
     }
     if (stats->devs_warned) {
         fprintf(stream, "%8lld device nodes skipped\n", stats->devs_warned);
+    }
+    if (stats->chown_warned) {
+        fprintf(stream, "%8lld chown faileds\n", stats->chown_warned);
     }
     if (stats->read_errors) {
         fprintf(stream, "%8lld errors on read\n", stats->read_errors);
@@ -1078,8 +1085,15 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         }
         if (uid!=-1 || gid!=-1) {
                 if (!dryrun && fchownat(dfd, target, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
-                        write_error("fchownat", to, target);
-                        ret=-1;
+                        if (errno==EPERM) {
+                                // Only warn about chown EPERM errors, user might not be root
+                                if (atomic_load(&opers.chown_warned)==0) {
+                                        show_error("fchownat() returned EPERM. Skipping rest of fchownat() errors:", file_path(to, target));
+                                }
+                                atomic_fetch_add(&opers.chown_warned, 1);
+                        } else {
+                                write_error("fchownat()", to, target);
+                        }
                 } else {
                         if (itemize>1) item("CO", to, target);
                         atomic_fetch_add(&opers.chown,1);
