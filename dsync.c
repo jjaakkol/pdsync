@@ -1472,10 +1472,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr,"Open target directory '%s': %s\n",argv[optind+1],strerror(errno));
                 exit(1);
         }
-        if (fchdir(tfd)<0) {
-	        fprintf(stderr,"chdir('%s'): %s\n",argv[optind],strerror(errno));
-	        exit(1);
-        }
+        fstat(sfd,&source_stat);
+        fstat(tfd,&target_stat);
 
         // Record the starting timestamp
         clock_gettime(CLOCK_BOOTTIME,&scans.start_clock_boottime);
@@ -1483,15 +1481,17 @@ int main(int argc, char *argv[]) {
         // Init the static source and target
         // FIXME: this should be removed.
         if (! realpath(argv[optind], s_frompath)) {
-                fprintf(stderr,"Cannot resolve source path '%s': %s\n", argv[optind], strerror(errno));
+                fprintf(stderr,"Can't resolve source path '%s': %s\n", argv[optind], strerror(errno));
                 exit(1);
         }
         if (! realpath(argv[optind+1], s_topath)) {
-                fprintf(stderr,"Cannot resolve target path '%s': %s\n", argv[optind+1], strerror(errno));
+                fprintf(stderr,"Can't resolve target path '%s': %s\n", argv[optind+1], strerror(errno));
                 exit(1);
         }
-        fstat(sfd,&source_stat);
-        fstat(tfd,&target_stat);
+        if (fchdir(tfd)<0) {
+               fprintf(stderr,"chdir('%s'): %s\n",argv[optind],strerror(errno));
+               exit(1);
+        }
 
         init_entry(&source_root, sfd, s_frompath);
         submit_job(NULL, &source_root, NULL, s_topath, 0, sync_directory);
