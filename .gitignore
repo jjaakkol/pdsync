@@ -2,3 +2,4 @@ pdsync
 *.o
 .vscode/
 dsync-test/
+dsync-target/
