@@ -43,10 +43,9 @@ typedef enum { ENTRY_CREATED,
 typedef struct {
         EntryState state;
         char *name;
-        struct stat stat;
+        struct stat _stat;
         char *link;
-        int error;                          /* If there was a IO error with stat() */
-        struct DirectoryStruct *dir;
+        struct DirectoryStruct *dir;    // Parent directory, if any. TODO try to get rid of this
 } Entry;
 
 // We keep the fd's of directories in a LRU cache to avoid closing and opening needlessly
@@ -68,10 +67,6 @@ typedef struct DirectoryStruct {
         struct JobStruct *last_job;
         int jobs;                               // Number of jobs running or queued in this directory
 } Directory;
-
-static inline const struct stat *dir_stat(const Directory *d) { 
-        return &d->parent_entry->stat;
-}
 
 typedef struct {
         struct timespec start_clock_boottime;
@@ -174,9 +169,9 @@ Entry *init_entry(Entry * entry, int dfd, char *name);
 void start_job_threads(int threads);
 void d_freedir(Directory *dir);
 int wait_for_entry(Entry *job);
-const char *dir_path(const Directory *d);
-const char *file_path(const Directory *d, const char *f);
-void show_error_dir(const char *message, const Directory *parent, const char *file);
+const char *dir_path(Directory *d);
+const char *file_path(Directory *d, const char *f);
+void show_error_dir(const char *message, Directory *parent, const char *file);
 JobResult run_one_job(Job *j);
 JobResult run_any_job();
 int print_jobs(FILE *f);
@@ -190,4 +185,22 @@ int dir_openat(Directory *d, const char *f);
 void d_freedir(Directory *dir);
 void dir_claim(Directory *dir);
 
-
+static inline const struct stat *entry_stat(Entry *e) {
+        assert(e);
+        if (e->state==ENTRY_CREATED) {
+                assert(e->dir);
+                if (dir_open(e->dir)>=0) {
+                        init_entry(e, e->dir->fd, e->name);
+                        dir_close(e->dir);
+                } else {
+                        e->state=ENTRY_FAILED;
+                }
+        }
+        return &e->_stat;
+}
+static inline const struct stat *dir_stat(Directory *d) { 
+        return entry_stat(d->parent_entry);
+}
+static inline int entry_isdir(const Directory *d, int i) {
+        return S_ISDIR(entry_stat(&d->array[i])->st_mode);
+}

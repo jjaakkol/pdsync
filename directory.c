@@ -15,7 +15,7 @@ typedef struct DentStruct {
 } Dent;
 
 
-void show_error_dir(const char *message, const Directory *parent, const char *file)
+void show_error_dir(const char *message, Directory *parent, const char *file)
 {
         fprintf(stderr, "Error: %s : %s : %s%s\n", message, strerror(errno), dir_path(parent), file);
 }
@@ -79,12 +79,11 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
         memset(entry, 0, sizeof(*entry));
         entry->name = name;
 
-        if (fstatat(dfd, name, &entry->stat, AT_SYMLINK_NOFOLLOW) < 0)
+        if (fstatat(dfd, name, &entry->_stat, AT_SYMLINK_NOFOLLOW) < 0)
         {
-                entry->error = errno;
                 show_error("fstatat", name);
         }
-        else if (S_ISLNK(entry->stat.st_mode))
+        else if (S_ISLNK(entry->_stat.st_mode))
         {
                 /* Read the symlink if there is one. FIXME: maybe skip this if we don't have --preserve-links */
                 char linkbuf[MAXLEN];
@@ -109,7 +108,7 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
         return entry;
 }
 
-const char *dir_path(const Directory *d)
+const char *dir_path(Directory *d)
 {
         _Thread_local static char buf[MAXLEN];
         _Thread_local static int len;
@@ -118,7 +117,7 @@ const char *dir_path(const Directory *d)
                 assert(d->magick==0xDADDAD);
                 dir_path(d->parent);
                 if (privacy && d->parent && d->parent->parent_entry &&
-                    d->parent->parent_entry->stat.st_uid != 0 && dir_stat(d)->st_uid != getuid())
+                    entry_stat(d->parent->parent_entry)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
                 {
                         len += snprintf(buf + len, MAXLEN - len, "[0x%lx]/", dir_stat(d)->st_ino);
                 }
@@ -132,7 +131,7 @@ const char *dir_path(const Directory *d)
         return buf;
 }
 
-const char *file_path(const Directory *d, const char *f)
+const char *file_path(Directory *d, const char *f)
 {
         _Thread_local static char buf[MAXLEN];
         if (privacy && d && d->parent_entry && dir_stat(d)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
@@ -344,7 +343,6 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
 
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL || fstat(dfd, &tmp_stat) < 0)
         {
-                parent_entry -> error=errno;
                 parent_entry->state=ENTRY_FAILED;
                 show_error_dir("open directory", parent, name);
                 goto fail;
@@ -376,7 +374,6 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         }
         if (errno)
         {
-                parent_entry->error=errno;
                 show_error_dir("readdir", parent, name);
                 goto fail;
         }
@@ -456,7 +453,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         assert(!parent || parent->magick == 0xDADDAD);
 
         if (entry->state==ENTRY_SCAN_READY) {
-                // Already scanned, but called gets a new reference
+                // Already scanned, but caller gets a new reference
                 entry->dir->ref++;
                 return entry->dir;
         }

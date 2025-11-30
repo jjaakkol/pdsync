@@ -501,7 +501,6 @@ void print_progress() {
 int unlink_entry(Directory *parent, Entry *tentry) {
         int ret=0;
         const char *name=tentry->name;
-        assert(!S_ISDIR(tentry->stat.st_mode));
 
         int dfd=dir_open(parent);
         if (!dryrun && unlinkat(dfd, name, 0)) {
@@ -564,7 +563,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
   
         for(i=0;i<del->entries;i++) {
                 set_thread_status(file_path(to, del->array[i].name), "unlinking");
-                if (S_ISDIR(del->array[i].stat.st_mode)) {
+                if (entry_isdir(del, i)) {
                         submit_job_first(NULL, &del->array[i], del, NULL, depth+1, remove_hierarchy);
                 } else if ( unlink_entry(del, &del->array[i]) ) {
                         goto fail; 
@@ -756,7 +755,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
                 // Truncate the file to the desired size, except if we know it already is right size
                 Entry *tentry=directory_lookup(to, target);
-                if (!tentry || tentry->stat.st_size!=from_stat.st_size) {
+                if (!tentry || entry_stat(tentry)->st_size!=from_stat.st_size) {
                         if (ftruncate(tofd, from_stat.st_size) < 0) {
                                 write_error("ftruncate", to, target);
                                 goto fail;
@@ -884,111 +883,97 @@ static int should_exclude(const Directory *from, const Entry *entry) {
  * Returns 1 if the from entry considered newer, changed or just different
  * than to entry
  */
-int entry_changed(const Entry *from, const Entry *to) {
-    if (from->error) {
-	/* If there was problems checking the file attributes, we probably
-	 * cannot access it anyway. So we return 'not changed' (and skip it).
-	 */
-	return 0;
-    }
+int entry_changed(Entry *from, Entry *to) {
+        if (entry_stat(from) == NULL || entry_stat(to) == NULL) {
+                // If stat info is missing because of some error, we update the Entry anyway
+                return 0;
+        }
 
-    if (to->error) {
-	/* Even when we cannot get the matching target file 
-	 * attributes, we might be able to unlink it. So we try to copy it.
-	 */
-	return 1;
-    }
-
-    /* At this point we know, that we have the stat information of both
-     * source and target files */
-
-    if (update_all) {
-	/* If we have update_all we update everything we can */
-	return 1;
-    }
+        if (update_all) {
+	        //If we have update_all we update everything we can */
+	        return 1;
+        }
 	
-    if (S_ISDIR(from->stat.st_mode)) {
-	/* Directories will be always handled */
-	return 1;
-    }
+        if (S_ISDIR(entry_stat(from)->st_mode)) {
+	        /* Directories will be always handled */
+	        return 1;
+        }
 
-    if (preserve_owner && from->stat.st_uid!=to->stat.st_uid) {
-	/* Owner changed and preserved */
-	return 1;
-    }
+        if (preserve_owner && entry_stat(from)->st_uid!=entry_stat(to)->st_uid) {
+                /* Owner changed and preserved */
+                return 1;
+        }
     
-    if (preserve_group && from->stat.st_gid!=to->stat.st_gid) {
-	/* Group changed */
-	return 1;
-    }
+        if (preserve_group && entry_stat(from)->st_gid!=entry_stat(to)->st_gid) {
+                /* Group changed */
+                return 1;
+        }
 
-    if (preserve_permissions && from->stat.st_mode!=to->stat.st_mode) {
-	/* Permissions changed */
-	return 1;
-    }
+        if (preserve_permissions && entry_stat(from)->st_mode!=entry_stat(to)->st_mode) {
+                /* Permissions changed */
+                return 1;
+        }
 
-    /* If size is different we need to at least update the file */
-    if (from->stat.st_size!=to->stat.st_size) {
+        /* If size is different we need to at least update the file */
+        if (entry_stat(from)->st_size!=entry_stat(to)->st_size) {
+                return 1;
+        }
+
+        /* If we have preserve time any change in mtime is applied */
+        if (preserve_time &&
+                                (entry_stat(from)->st_mtime!=entry_stat(to)->st_mtime ||
+                                entry_stat(from)->st_mtim.tv_nsec != entry_stat(to)->st_mtim.tv_nsec)) {
+                return 1;
+        }
+
+        /* If we have --atime-preserve any change in atime is applied */
+        if (atime_preserve &&
+                                (entry_stat(from)->st_atime!=entry_stat(to)->st_atime ||
+                                entry_stat(from)->st_atim.tv_nsec != entry_stat(to)->st_atim.tv_nsec) ) {
+                return 1;
+        }
+
+        /* If from is newer by mtime it has changed. */
+        if (entry_stat(from)->st_mtime>entry_stat(to)->st_mtime) {
+                return 1;
+        }
+        if (entry_stat(from)->st_mtime == entry_stat(to)->st_mtime &&
+                entry_stat(from)->st_mtim.tv_nsec > entry_stat(to)->st_mtim.tv_nsec) {
+                return 1;
+        }
+
+        /* Regular file and we have found no reason to copy it.*/
+        if (S_ISREG(entry_stat(from)->st_mode) && S_ISREG(entry_stat(to)->st_mode)) {
+                return 0;
+        }
+
+        /* Don't recreate FIFOs if not needed .*/
+        if (S_ISFIFO(entry_stat(from)->st_mode) && S_ISFIFO(entry_stat(to)->st_mode)) {
+                return 0;
+        }
+
+        /* If symlink names match don't update it. */
+        if (S_ISLNK(entry_stat(from)->st_mode) && 
+                S_ISLNK(entry_stat(to)->st_mode) &&
+                strcmp(from->link,to->link)==0) {
+                return 0; // Symlinks match
+        }
+
+        // No reason to skip updating
         return 1;
-    }
-
-    /* If we have preserve time any change in mtime is applied */
-    if (preserve_time &&
-                (from->stat.st_mtime!=to->stat.st_mtime ||
-                from->stat.st_mtim.tv_nsec != to->stat.st_mtim.tv_nsec)) {
-        return 1;
-    }   
-
-    /* If we have --atime-preserve any change in atime is applied */
-    if (atime_preserve &&
-                (from->stat.st_atime!=to->stat.st_atime ||
-                from->stat.st_atim.tv_nsec != to->stat.st_atim.tv_nsec) ) {
-        return 1;
-    }
-
-    /* If from is newer by mtime it has changed. */
-    if (from->stat.st_mtime>to->stat.st_mtime) {
-	return 1;
-    }
-    if (from->stat.st_mtime == to->stat.st_mtime &&
-        from->stat.st_mtim.tv_nsec > to->stat.st_mtim.tv_nsec) {
-        return 1;
-    }
-
-    /* Regular file and we have found no reason to copy it.*/
-    if (S_ISREG(from->stat.st_mode) && S_ISREG(to->stat.st_mode)) {
-        return 0;
-    }
-
-    /* Don't recreate FIFOs if not needed .*/
-    if (S_ISFIFO(from->stat.st_mode) && S_ISFIFO(to->stat.st_mode)) {
-        return 0;
-    }
-
-    /* If symlink names match don't update it. */
-    if (S_ISLNK(from->stat.st_mode) && 
-	S_ISLNK(to->stat.st_mode) &&
-	strcmp(from->link,to->link)==0) {
-	/* Symlinks do match */
-	return 0;
-    }
-
-    /* fprintf(stderr,"Just different: %s %s\n",from->name,to->name); */
-    /* We found no reason to skip updating */
-    return 1;
 }
 
 /* FIXME: hard links don't work now */
-int check_hard_link(const Entry *fentry, const char *target) {
-    int hval=(fentry->stat.st_ino+fentry->stat.st_dev)%hash_size;
+int check_hard_link(Entry *fentry, const char *target) {
+        int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
     Link *l;
     struct stat target_stat;
 
     /* Lookup in the hash table */
-    for(l=link_htable[hval];
-	l && 
-	    (l->source_dev!=fentry->stat.st_dev ||
-	     l->source_ino!=fentry->stat.st_ino);
+        for(l=link_htable[hval];
+        l && 
+                (l->source_dev!=entry_stat(fentry)->st_dev ||
+                 l->source_ino!=entry_stat(fentry)->st_ino);
 	l=l->next);
     if (l) {
 	/* Found the entry from hash table */
@@ -1015,8 +1000,8 @@ int check_hard_link(const Entry *fentry, const char *target) {
 	
 }
 
-void save_link_info(const Entry *fentry, const char *path) {
-    int hval=(fentry->stat.st_ino+fentry->stat.st_dev)%hash_size;
+void save_link_info(Entry *fentry, const char *path) {
+        int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
     Link *link=NULL;
     struct stat target;
     if (!dryrun && lstat(path,&target)<0) {
@@ -1029,8 +1014,8 @@ void save_link_info(const Entry *fentry, const char *path) {
 	perror("malloc");
 	return;
     }
-    link->source_ino=fentry->stat.st_ino;
-    link->source_dev=fentry->stat.st_dev;
+        link->source_ino=entry_stat(fentry)->st_ino;
+        link->source_dev=entry_stat(fentry)->st_dev;
     if (dryrun) {
 	link->target_ino=0;
 	link->target_dev=0;
@@ -1043,8 +1028,8 @@ void save_link_info(const Entry *fentry, const char *path) {
     link_htable[hval]=link;
 }
 
-void skip_entry(Directory *to, const Entry *fentry) {
-        if ( S_ISDIR(fentry->stat.st_mode) ) {
+void skip_entry(Directory *to, Entry *fentry) {
+        if ( S_ISDIR(entry_stat(fentry)->st_mode) ) {
 	        scans.dirs_skipped++;
 	        if (itemize>2) item("SD",to,fentry->name);
         } else {
@@ -1077,11 +1062,11 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         /* Check if we need to update UID and GID */
         uid_t uid=-1;
         gid_t gid=-1;
-        if (preserve_owner && to_stat.st_uid != fentry->stat.st_uid) {
-                uid=fentry->stat.st_uid;
+        if (preserve_owner && to_stat.st_uid != entry_stat(fentry)->st_uid) {
+                uid=entry_stat(fentry)->st_uid;
         }
-        if (preserve_group && (to_stat.st_gid != fentry->stat.st_gid) ) {
-                gid=fentry->stat.st_gid;
+        if (preserve_group && (to_stat.st_gid != entry_stat(fentry)->st_gid) ) {
+                gid=entry_stat(fentry)->st_gid;
         }
         if (uid!=-1 || gid!=-1) {
                 if (!dryrun && fchownat(dfd, target, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
@@ -1102,11 +1087,11 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
 
         // Permission bits
         if (preserve_permissions && 
-                !S_ISLNK(fentry->stat.st_mode) &&
-                fentry->stat.st_mode!=to_stat.st_mode) {
+                !S_ISLNK(entry_stat(fentry)->st_mode) &&
+                entry_stat(fentry)->st_mode!=to_stat.st_mode) {
 
                 // Masked mode bits
-                mode_t masked_mode = fentry->stat.st_mode & (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
+                mode_t masked_mode = entry_stat(fentry)->st_mode & (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
 
                 if (!dryrun && fchmodat(dfd, target, masked_mode, AT_SYMLINK_NOFOLLOW)) {
                         // fchmodat() failed: it can fail with ENOTSUPPORTED. Try again with fchmod()
@@ -1139,8 +1124,8 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 tmp[0]=to_stat.st_atim;
                 tmp[1]=to_stat.st_mtim;
 
-                if (atime_preserve) tmp[0]=fentry->stat.st_atim;
-                if (preserve_time) tmp[1]=fentry->stat.st_mtim;
+                if (atime_preserve) tmp[0]=entry_stat(fentry)->st_atim;
+                if (preserve_time) tmp[1]=entry_stat(fentry)->st_mtim;
 
                 if (
                         to_stat.st_atim.tv_sec == tmp[0].tv_sec &&
@@ -1158,7 +1143,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 }
         }
 
-        if (S_ISDIR(fentry->stat.st_mode) && sync_tag) {
+        if (S_ISDIR(entry_stat(fentry)->st_mode) && sync_tag) {
                 if (!dryrun) {
                         int fd=openat(dfd, target, O_RDONLY|O_DIRECTORY);
                         if (fd<0) {
@@ -1197,7 +1182,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 return -1;
         }
 
-        if (S_ISREG(fentry->stat.st_mode)) {
+        if (S_ISREG(entry_stat(fentry)->st_mode)) {
 	        /* copy regular might submit jobs */
 	        copy_regular(from, fentry, to, target, -1);
                 goto out;
@@ -1205,7 +1190,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         
         set_thread_status(file_path(to,target),"create");
 
-        if (S_ISDIR(fentry->stat.st_mode)) {
+        if (S_ISDIR(entry_stat(fentry)->st_mode)) {
                 struct stat target_stat;
 	        if (fstatat(tofd,target,&target_stat,AT_SYMLINK_NOFOLLOW)<0) {
                         if  (errno==ENOENT ) {
@@ -1232,10 +1217,10 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                                 goto fail;
 		        }
 	        }
-        	if (one_file_system && from->parent && fentry->stat.st_dev!=dir_stat(from->parent)->st_dev) {
+        	if (one_file_system && from->parent && entry_stat(fentry)->st_dev!=dir_stat(from->parent)->st_dev) {
 	                /* On different file system and one_file_system was given */
                         skip_entry(to,fentry);
-	        } else if (fentry->stat.st_ino == target_stat.st_ino &&  fentry->stat.st_dev == target_stat.st_dev ) {
+                } else if (entry_stat(fentry)->st_ino == target_stat.st_ino &&  entry_stat(fentry)->st_dev == target_stat.st_dev ) {
 	                /* Attempt to recurse into target directory */
                         show_error_dir("Skipping target directory", to, target);
 	                skip_entry(to, fentry);
@@ -1249,7 +1234,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         goto out;
 	        }
     
-        } else if (S_ISLNK(fentry->stat.st_mode)) {
+        } else if (S_ISLNK(entry_stat(fentry)->st_mode)) {
         	if (!preserve_links) goto out;
 	        item("SL",to,target);
 	        if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
@@ -1259,25 +1244,25 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	                atomic_fetch_add(&opers.symlinks_created, 1);
 	        }
 
-        } else if (S_ISSOCK(fentry->stat.st_mode)) {
+        } else if (S_ISSOCK(entry_stat(fentry)->st_mode)) {
                 if (opers.sockets_warned==0) {
                         show_error_dir("Sockets are ignored. Only first socket found is reported.", from,fentry->name);
                 }
                 atomic_fetch_add(&opers.sockets_warned, 1);
                 goto out;
 
-        } else if (S_ISFIFO(fentry->stat.st_mode)) {
+        } else if (S_ISFIFO(entry_stat(fentry)->st_mode)) {
 	        if (!preserve_devices) return 0;
 	        item("FI",to,target);
                 // Attempt to create FIFO with the same permission bits as source (mask out file type bits)
                 if (!dryrun && mkfifoat(tofd, target,
-                        fentry->stat.st_mode & 0777 )<0) {
+                        entry_stat(fentry)->st_mode & 0777 )<0) {
                         write_error("mkfifo", to, target);
                         goto fail;
 	        }
 
         // Don't bother with device special files 
-        } else if (S_ISCHR(fentry->stat.st_mode) || S_ISBLK(fentry->stat.st_mode)) {
+        } else if (S_ISCHR(entry_stat(fentry)->st_mode) || S_ISBLK(entry_stat(fentry)->st_mode)) {
                 if (opers.devs_warned==0) {
                         show_error_dir("Ignoring device. Only first device is reported.", from, fentry->name);
                 }
@@ -1349,7 +1334,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         // Schedule jobs or just remove missing files and directories if --delete is used
         for(int to_i=0; delete && to && to_i < to->entries; to_i++) {
 	        if ( directory_lookup(from,to->array[to_i].name)==NULL) {
-                        if (S_ISDIR(to->array[to_i].stat.st_mode)) {
+                        if (entry_isdir(to, to_i)) {
                                 submit_job_first(NULL, &to->array[to_i], to, NULL, offset+1, remove_hierarchy);
                         } else {
 	                        unlink_entry(to, &to->array[to_i]);
@@ -1392,14 +1377,14 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 
 	        /* Check if the already existing target file is OK, or should we remove it */
 	        if (tentry) {
-	                if (entry_changed(fentry,tentry)) {
-		                if (!S_ISDIR(fentry->stat.st_mode) || 
-		                !S_ISDIR(tentry->stat.st_mode)) {
-                                        if ( S_ISREG(fentry->stat.st_mode) && S_ISREG(tentry->stat.st_mode) ) {
+                        if (entry_changed(fentry,tentry)) {
+                        	if (!S_ISDIR(entry_stat(fentry)->st_mode) || 
+                        	!S_ISDIR(entry_stat(tentry)->st_mode)) {
+                                                if ( S_ISREG(entry_stat(fentry)->st_mode) && S_ISREG(entry_stat(tentry)->st_mode) ) {
                                                 // Try to keep existing file.
                                                 atomic_fetch_add(&opers.files_updated,1);
                                                 if (itemize>1) item("KEEP", to, tentry->name );
-                                        } else if (delete || !S_ISDIR(tentry->stat.st_mode)) {
+                                        } else if (delete || !S_ISDIR(entry_stat(tentry)->st_mode)) {
 			                        /* Entry exists, but it is OK to remove it */
 			                        unlink_entry(to, tentry);
 		                        } else {
@@ -1416,9 +1401,9 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	        }
 
                 if (!delete_only) {
-	                /* Check for hard links */
-	                if (fentry->stat.st_nlink>1 &&
-		          !S_ISDIR(fentry->stat.st_mode)) {
+                	/* Check for hard links */
+                	if (entry_stat(fentry)->st_nlink>1 &&
+                  !S_ISDIR(entry_stat(fentry)->st_mode)) {
 		                static int link_count_warned=0;
 		                /* Found a hard link */
 		                if (preserve_hard_links) {
@@ -1436,8 +1421,8 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                         //submit_job(from, fentry, to, fentry->name, i, create_target);
                         create_target(from, fentry, to, fentry->name, i);
 
-	                /* Save paths to entries having link count > 1 for making hard links */
-	                if (preserve_hard_links && fentry->stat.st_nlink>1 && !S_ISDIR(fentry->stat.st_mode)) {
+                	/* Save paths to entries having link count > 1 for making hard links */
+                	if (preserve_hard_links && entry_stat(fentry)->st_nlink>1 && !S_ISDIR(entry_stat(fentry)->st_mode)) {
 		                save_link_info(fentry,todir);
 	                }
 	        }
