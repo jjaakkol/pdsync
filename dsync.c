@@ -20,9 +20,6 @@
 #include <sys/mman.h>
 #include <sys/xattr.h>
 
-#define VERSIONNUM "1.9"
-#define VERSION VERSIONNUM "-" MODTIME
-
 static char* const *static_argv;
 static int dryrun=0;
 static int delete=0;
@@ -73,26 +70,28 @@ static struct stat target_stat;
 static struct stat source_stat;
 
 typedef struct {
-    int dirs_created;
-    int files_copied;
-    atomic_llong files_updated;
-    int entries_removed;
-    int dirs_removed;
-    atomic_llong bytes_copied;
-    atomic_llong sparse_bytes;
-    int symlinks_created;
-    int sockets_created;
-    int fifos_created;
-    int devs_created;
-    int hard_links_created;
-    int read_errors;
-    atomic_int a_write_errors;
-    int no_space;
-    atomic_llong chown;
-    atomic_llong chmod;
-    atomic_llong times;
-    atomic_llong items;
-    atomic_llong sync_tags; /* count of created sync tags */
+        int dirs_created;
+        int files_copied;
+        atomic_llong files_updated;
+        int entries_removed;
+        int dirs_removed;
+        atomic_llong bytes_copied;
+        atomic_llong sparse_bytes;
+        atomic_llong symlinks_created;
+        atomic_llong fifos_created;
+        int hard_links_created;
+        atomic_llong chown;
+        atomic_llong chmod;
+        atomic_llong times;
+        atomic_llong items;             // Number of of operations listed with --itemize
+        atomic_llong sync_tags;         // sync_tags created
+
+        // Errors and warnings
+        atomic_llong sockets_warned;
+        atomic_llong devs_warned;
+        atomic_llong read_errors;
+        atomic_llong write_errors;
+        atomic_llong error_espace;
 } Opers; 
 Opers opers;
 Scans scans;
@@ -156,8 +155,11 @@ static struct option options[]= {
 JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
 JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const char *target, off_t offset);
 
+#ifndef VERSION
+        #define VERSION "1.9-build"
+#endif
 static void show_version() {
-    printf("pdsync "VERSION" (C) 09.2000 - 05.2025 Jani Jaakkola (jani.jaakkola@helsinki.fi)\n");
+    printf("pdsync %s (C) 09.2000 - 05.2025 Jani Jaakkola (jani.jaakkola@helsinki.fi)\n", VERSION);
 }
 
 static void show_help() {
@@ -181,28 +183,19 @@ static void show_help() {
     putchar('\n');
 }
 
-
-void write_error(const char *why, const Directory *d, const char *file) {
-        atomic_fetch_add(&opers.a_write_errors, 1);
-        if (errno==ENOSPC && !delete) {
-                fprintf(stderr, "Out of space. Consider --delete to remove files.\n");
-                opers.no_space++;
-        }
-        fprintf(stderr,"Write error: %s %s%s: %s\n",
-                why,
-                (privacy) ? "[PRIVATE]":dir_path(d), file,
-                (errno==0) ? "" : strerror(errno));
-        fprintf(stderr,"Exiting immediately.\n");
-        exit(2);
+void show_error(const char *why, const char *file) {
+        fprintf(stderr,"Error: %s %s: %s\n",why,
+	        (privacy) ? "[PRIVATE]":file,
+	        (errno==0) ? "errno==0" : strerror(errno));
 }
 
-void show_error(const char *why, const char *file) {
-    if (errno==ENOSPC) {
-	opers.no_space++;
-    }
-    fprintf(stderr,"Error: %s %s: %s\n",why,
-	    (privacy) ? "[PRIVATE]":file,
-	    (errno==0) ? "" : strerror(errno));
+void write_error(const char *why, const Directory *d, const char *file) {
+        if (errno==ENOSPC) {
+	        atomic_fetch_add(&opers.error_espace, 1);
+        }
+        atomic_fetch_add(&opers.write_errors, 1);
+        show_error("Write error. Exiting immediately.", file_path(d, file));
+        exit(2);
 }
 
 static void show_warning(const char *why, const char *file) {
@@ -422,19 +415,13 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream, "%8s data in sparse blocks\n", format_bytes(stats->sparse_bytes, buf));
     }
     if (stats->symlinks_created) {
-        fprintf(stream, "%8d symlinks created\n", stats->symlinks_created);
+        fprintf(stream, "%8lld symlinks created\n", stats->symlinks_created);
     }
     if (stats->hard_links_created) {
         fprintf(stream, "%8d hard links created\n", stats->hard_links_created);
     }
-    if (stats->sockets_created) {
-        fprintf(stream, "%8d sockets created\n", stats->sockets_created);
-    }
     if (stats->fifos_created) {
-        fprintf(stream, "%8d fifos created\n", stats->fifos_created);
-    }
-    if (stats->devs_created) {
-        fprintf(stream, "%8d devs created\n", stats->devs_created);
+        fprintf(stream, "%8lld fifos created\n", stats->fifos_created);
     }
     if (stats->chown) {
         fprintf(stream,"%8lld file owner/group changed\n", stats->chown);
@@ -448,11 +435,17 @@ static void print_opers(FILE *stream, const Opers *stats) {
     if (stats->sync_tags) {
         fprintf(stream,"%8lld sync tags set\n", stats->sync_tags);
     }
-    if (stats->read_errors) {
-        fprintf(stream, "%8d errors on read\n", stats->read_errors);
+    if (stats->sockets_warned) {
+        fprintf(stream, "%8lld sockets skipped\n", stats->sockets_warned);
     }
-    if (stats->a_write_errors) {
-        fprintf(stream, "%8d errors on write\n", stats->a_write_errors);
+    if (stats->devs_warned) {
+        fprintf(stream, "%8lld device nodes skipped\n", stats->devs_warned);
+    }
+    if (stats->read_errors) {
+        fprintf(stream, "%8lld errors on read\n", stats->read_errors);
+    }
+    if (stats->write_errors) {
+        fprintf(stream, "%8lld errors on write\n", stats->write_errors);
     }
 }
 
@@ -1502,11 +1495,11 @@ int main(int argc, char *argv[]) {
         // start the threads, job queue and wait the submitted job to finish
         start_job_threads(threads);
 
-    if (opers.no_space && !delete_only) {
+    if (opers.error_espace && !delete_only) {
 	show_warning("Out of space. Consider --delete.",NULL);
     }
-    if (opers.a_write_errors) {
-	fprintf(stderr,"pdsync was canceled because of write errors.\n");
+    if (opers.write_errors) {
+	fprintf(stderr,"There was write errors.\n");
     }
 
     if (!quiet) {
@@ -1530,7 +1523,7 @@ int main(int argc, char *argv[]) {
 	    return 1;
 	}
     } else {
-	if (opers.read_errors==0 && opers.a_write_errors==0) {
+	if (opers.read_errors==0 && opers.write_errors==0) {
 	    /* No failures */
 	    return 0;
 	} else {
