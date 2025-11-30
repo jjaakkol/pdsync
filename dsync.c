@@ -1256,11 +1256,14 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         write_error("symlink", to, target);
                         goto fail;
                 } else {
-	                opers.symlinks_created++;
+	                atomic_fetch_add(&opers.symlinks_created, 1);
 	        }
 
         } else if (S_ISSOCK(fentry->stat.st_mode)) {
-                show_error_dir("Ignoring socket", from,fentry->name);
+                if (opers.sockets_warned==0) {
+                        show_error_dir("Sockets are ignored. Only first socket found is reported.", from,fentry->name);
+                }
+                atomic_fetch_add(&opers.sockets_warned, 1);
                 goto out;
 
         } else if (S_ISFIFO(fentry->stat.st_mode)) {
@@ -1274,10 +1277,12 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        }
 
         // Don't bother with device special files 
-        } else if (S_ISCHR(fentry->stat.st_mode)) {
-                show_error_dir("Ignoring character device", from, fentry->name);
+        } else if (S_ISCHR(fentry->stat.st_mode) || S_ISBLK(fentry->stat.st_mode)) {
+                if (opers.devs_warned==0) {
+                        show_error_dir("Ignoring device. Only first device is reported.", from, fentry->name);
+                }
+                atomic_fetch_add(&opers.devs_warned, 1);
                 goto out;
-
         } else {
 	        show_error_dir("Unknown file type ignored in dir", from, fentry->name);
                 goto out;
