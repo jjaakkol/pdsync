@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 #include <sys/xattr.h>
 
+// User selected options
 static char* const *static_argv;
 static int dryrun=0;
 static int delete=0;
@@ -47,11 +48,10 @@ static int threads=4;
 int debug=0;
 const char *sync_tag=NULL;
 const char *sync_tag_name="user.pdsync";
+const size_t copy_job_size = 16 * 1024 * 1024; // Default copy_job_size: FIXME: make adjustable
 
+// FIXME: get rid of globals
 uid_t myuid=0;
-
-
-
 FILE *tty_stream=NULL; /* For --progress */
 
 typedef struct ExcludeStruct {
@@ -652,7 +652,6 @@ int copy_regular_mmap(int fd_in, int fd_out, off_t filesize, off_t offset) {
 
 // Copy file simply with regular read/write
 int copy_regular_rw(int fd_in, int fd_out, off_t filesize, off_t offset) {
-        const size_t copy_job_size = 16 * 1024 * 1024;
         const size_t bufsize=1*1024*1024;
         size_t this_chunk = (filesize - offset > copy_job_size) ? copy_job_size : (size_t)(filesize - offset);
         static _Thread_local char *buf=NULL;
@@ -703,14 +702,56 @@ int copy_regular_rw(int fd_in, int fd_out, off_t filesize, off_t offset) {
         return -1;
 }
 
+// Copy file with sendfile and option to seek a hole and punch hole to target
+int copy_regular_sendfile(int fromfd, int tofd, off_t filesize, off_t offset) {
+        off_t w=0;
+        if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
+                return -1;
+        }
+
+        off_t written=0;
+        off_t to_copy=(offset + copy_job_size > filesize) ? filesize-offset : copy_job_size;
+
+        while(written<to_copy) {
+                off_t chunk=to_copy-written;
+
+                // If preserver_sparse we punch holes
+                if (preserve_sparse) {
+                        off_t hole=lseek(fromfd, offset+written, SEEK_HOLE);
+                        if (hole==offset+written) {
+                                // Found a hole at this point . Punch a hole to target
+                                off_t data=lseek(fromfd, hole, SEEK_DATA);
+                                w=data-hole;
+                                if (fallocate(tofd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, w)<0) {
+                                        fprintf(stderr,"Disabling sparse files: fallocate(%ld): %s\n", w, strerror(errno));
+                                        preserve_sparse=0;
+                                } else {
+                                        atomic_fetch_add(&opers.sparse_bytes, w); // A hole was punched
+                                        written+=w;
+                                        lseek(tofd, offset+written, SEEK_SET);
+                                }
+                        }
+                        // Move pointer back to the data and count the next copy chunk size
+                        lseek(fromfd, offset+written, SEEK_SET);
+                        chunk=hole-(offset+written);
+                        if (written+chunk > to_copy) chunk=to_copy-written;
+                }
+
+                // Now copy the data
+                if ( (w=sendfile(tofd, fromfd, NULL, chunk) )>0) {
+                        atomic_fetch_add(&opers.bytes_copied, w);
+                        written+=w;
+                }
+        }
+        if (w<0) return -1;
+        return 0;
+}
+
 int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int fromfd=-1;
         int tofd=-1;
         int to_dfd=-1;
-        struct stat from_stat;
-        int sparse_copy=preserve_sparse; // FIXME: do we need this?
         int ret=0;
-        off_t copy_job_size=16*1024*1024;
         char buf[32];
         int num_jobs=0;
 
@@ -718,19 +759,21 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         const char *source=fentry->name;
         assert(source && target);
 
+        if (dryrun) {
+                item("CP",to,target);
+                opers.bytes_copied+=entry_stat(fentry)->st_size;
+                sync_metadata(from, fentry, to, target, 0);
+                return 0;
+        }
+
         int from_dfd = dir_open(from);
         fromfd=openat(from_dfd, source, O_RDONLY|O_NOFOLLOW);
-        if (fromfd<0 || fstat(fromfd,&from_stat)) {
+        if (fromfd<0) {
                 show_error_dir("open", from, source);
                 goto fail; 
         }
-        // FIXME: this gets confured if size of the file changes during copying
-        num_jobs= (from_stat.st_size + copy_job_size - 1) / copy_job_size;
-        if (dryrun) {
-                item("CP",to,target);
-                opers.bytes_copied+=from_stat.st_size;
-                goto end;
-        }
+        num_jobs= (entry_stat(fentry)->st_size + copy_job_size - 1) / copy_job_size;
+
         to_dfd = dir_open(to);
         // Use the source entry's permission bits (mask out file type bits) when creating target.
         // mmap() IO needs RDWR access
@@ -745,28 +788,27 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 set_thread_status(file_path(to,target),"ftruncate");
 
                 /* Check for sparse file */
-                if ( from_stat.st_size > (1024*1024) && from_stat.st_size/512 > from_stat.st_blocks ) {
+                if ( entry_stat(fentry)->st_size/512 > entry_stat(fentry)->st_blocks ) {
 	                static int sparse_warned=0;
 	                if (!sparse_warned && !preserve_sparse) {
-	                        show_warning("Sparse or compressed files detected. Consider --sparse option",source);
+	                        show_warning("Sparse or compressed files detected. Consider --sparse option", source);
                                 sparse_warned++;
                         }
 	        }
 
-                // Truncate the file to the desired size, except if we know it already is right size
+                // If size doesn't match trcuncate the target file
                 Entry *tentry=directory_lookup(to, target);
-                if (!tentry || entry_stat(tentry)->st_size!=from_stat.st_size) {
-                        if (ftruncate(tofd, from_stat.st_size) < 0) {
+                if (!tentry || entry_stat(tentry)->st_size!=entry_stat(fentry)->st_size) {
+                        if (ftruncate(tofd, entry_stat(fentry)->st_size) < 0) {
                                 write_error("ftruncate", to, target);
                                 goto fail;
                         }
                 }
 
                 /* Submit the actual copy jobs */
-                if (from_stat.st_size==0) {
-                        goto end; /* Zero size file. We are done. */
-                } else if (from_stat.st_size<=16*1024) {
+                if (entry_stat(fentry)->st_size<=16*1024) {
                         offset=0; // We have the file open and it is small. Copy it ourselves
+                        if (entry_stat(fentry)->st_size==0) goto end; // Zero size file, skip copy
                 } else {
                         for (int i=0; i<num_jobs; i++) {
                                 submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
@@ -778,63 +820,21 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
         if (update_all || check) {
-                if (sparse_copy) {
+                if (preserve_sparse) {
                         snprintf(buf,sizeof(buf)-1,"update mmap %ld", offset/copy_job_size);
                         set_thread_status(file_path(to,target),buf);
-                        if (copy_regular_mmap(fromfd, tofd, from_stat.st_size, offset)<0) {
+                        if (copy_regular_mmap(fromfd, tofd, entry_stat(fentry)->st_size, offset)<0) {
                                 write_error("copy_regular_mmap", to, target);
                         }
                 } else {
                         snprintf(buf,sizeof(buf)-1,"update rw %ld", offset/copy_job_size);
                         set_thread_status(file_path(to,target),buf);
-                        copy_regular_rw(fromfd, tofd, from_stat.st_size, offset);
+                        copy_regular_rw(fromfd, tofd, entry_stat(fentry)->st_size, offset);
                 }
         } else {
                 snprintf(buf,sizeof(buf)-1,"sendfile %ld", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
-
-	        // Simple loop with option to seek a hole and punch hole to target
-                int w=0;
-                if ( lseek(fromfd,offset,SEEK_SET)<0 || lseek(tofd,offset,SEEK_SET)<0 ) {
-                        write_error("lseek", to, target);
-                        goto fail;
-                }
-                off_t written=0;
-                off_t to_copy=(offset + copy_job_size > from_stat.st_size) ? from_stat.st_size-offset : copy_job_size;
-                while(written<to_copy) {
-                        off_t chunk=to_copy-written;
-
-                        // If sparse_copy check for holes
-                        if (sparse_copy) {
-                                off_t hole=lseek(fromfd, offset+written, SEEK_HOLE);
-                                if (hole==offset+written) {
-                                        // Found a hole. Punch a hole to target
-                                        off_t data=lseek(fromfd, hole, SEEK_DATA);
-                                        w=data-hole; 
-                                        if (fallocate(tofd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, w)<0) {
-                                                fprintf(stderr,"fallocate(FALLOC_PUNCH_HOLE,%d): %s", w, strerror(errno));
-                                        } else {
-                                                // FIXME: Need to write zero's to target
-                                        }
-                                        atomic_fetch_add(&opers.sparse_bytes, w);
-                                        written+=w;
-                                        lseek(tofd, offset+written, SEEK_SET);
-                                }
-                                // Move pointer back to the data and count the next copy chunk size
-                                lseek(fromfd, offset+written, SEEK_SET);
-                                chunk=hole-(offset+written);
-                                if (written+chunk > to_copy) chunk=to_copy-written; 
-                        } 
-                        // Just copy the data 
-                        if ( (w=sendfile(tofd,fromfd,NULL,chunk) )>0) {
-                                atomic_fetch_add(&opers.bytes_copied,w);
-                                written+=w;
-                        }
-                }
-	        if (w<0) {
-                        write_error("write", to, target);
-                        goto fail;
-        	}
+                copy_regular_sendfile(fromfd, tofd, entry_stat(fentry)->st_size, offset);
         }
 
         if (offset/copy_job_size == num_jobs-1) {
@@ -859,7 +859,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         } else set_thread_status(file_path(to,target),"copy submitted");
         return ret;
  fail:
-        item("ERROR", from, target);
+        item("# cp failed", to, target);
         fentry->state=ENTRY_FAILED;
         ret = RET_FAILED;
         goto end;
