@@ -29,6 +29,7 @@ static int one_file_system=0;
 static int atime_preserve=0;
 static int itemize=0;
 static int quiet=0;
+static int stats=0;
 static int preserve_permissions=0;
 static int preserve_owner=0;
 static int preserve_group=0;
@@ -117,7 +118,8 @@ enum {
         SYNC_TAG=259,
         SYNC_TAG_NAME=260,
 	DEBUG=261,
-        CHECK=262
+        CHECK=262,
+        STATS=263
 };
 
 
@@ -150,6 +152,7 @@ static struct option options[]= {
         { "sync-tag-name",   1, NULL, SYNC_TAG_NAME },
         { "debug",           0, NULL, DEBUG },
         { "check",           0, NULL, CHECK },
+        { "stats",           0, NULL, STATS },
         { NULL, 0, NULL, 0 }
 };
 
@@ -188,6 +191,11 @@ void show_error(const char *why, const char *file) {
         fprintf(stderr,"Error: %s %s: %s\n",why,
 	        (privacy) ? "[PRIVATE]":file,
 	        (errno==0) ? "errno==0" : strerror(errno));
+}
+
+void read_error(const char *why, const Directory *d, const char *file) {
+        atomic_fetch_add(&opers.read_errors, 1);
+        show_error("Read error:", file_path(d, file));
 }
 
 void write_error(const char *why, const Directory *d, const char *file) {
@@ -252,7 +260,7 @@ static int parse_options(int argc, char *argv[]) {
 	case 'P': 
 	        tty_stream=(tty_stream>0) ? tty_stream :fopen("/dev/tty","w");
 	        if (!tty_stream) {
-		        fprintf(stderr,"Could not open /dev/tty. Using stdout for progress reports.\n");
+		        fprintf(stderr,"Warning: could not open /dev/tty. Using stderr for progress reports.\n");
 		        tty_stream=stderr;
 	        }	    
 	        progress++; 
@@ -291,6 +299,7 @@ static int parse_options(int argc, char *argv[]) {
         case SYNC_TAG: sync_tag=optarg; break;
         case DEBUG: debug++; fprintf(stderr,"Debug: %d\n",debug); break;
 	case CHECK: check=1; break;
+        case STATS: stats++; break;
 	case 'a':
 	    recursive=1;
 	    preserve_permissions=1;
@@ -507,7 +516,7 @@ int unlink_entry(Directory *parent, Entry *tentry) {
                 write_error("unlink", parent, name);
                 ret=-1;
         } else  {
-                item("RM",parent,name);
+                item("rm -f", parent,name);
                 opers.entries_removed++;
         }
         dir_close(parent);
@@ -1000,6 +1009,7 @@ int check_hard_link(Entry *fentry, const char *target) {
 	
 }
 
+// FIXME: refactor this
 void save_link_info(Entry *fentry, const char *path) {
         int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
     Link *link=NULL;
@@ -1311,7 +1321,8 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
 
         from=scan_directory(from_parent, parent_fentry);
         if (from==NULL) {
-                item("ERROR", from_parent, parent_fentry->name);
+                read_error("scan_directory", from_parent, parent_fentry->name);
+                item("# Skipped because directory read failed", from_parent, parent_fentry->name);
 	        opers.read_errors++;
 	        goto fail;
         }
@@ -1499,40 +1510,42 @@ int main(int argc, char *argv[]) {
         // start the threads, job queue and wait the submitted job to finish
         start_job_threads(threads);
 
-    if (opers.error_espace && !delete_only) {
-	show_warning("Out of space. Consider --delete.",NULL);
-    }
-    if (opers.write_errors) {
-	fprintf(stderr,"There was write errors.\n");
-    }
+        // Finished. Show all the stats
+        if (progress>=1) {
+                print_progress(); // One last fime
+        }
+        if (!quiet) {
+                time_t now = time(NULL);
+                struct tm *t = localtime(&now);
+                char buf[64];
 
-    if (!quiet) {
-        time_t now = time(NULL);
-        struct tm *t = localtime(&now);
-        char buf[64];
-        tty_stream=stdout;
-        print_progress();
+                strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
+                printf("# Pdsync %s finished at %s\n",VERSION,buf);
+        }
 
-        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
-        printf("Pdsync %s finished at %s\n",VERSION,buf);
+        if (stats>0) print_opers(stdout, &opers);
+        if (stats>1) print_scans(&scans);
 
-    }
-    if (dryrun) {
-	Opers dummy;
-	memset(&dummy,0,sizeof(dummy));
-	if (memcmp(&dummy,&opers,sizeof(dummy))==0) {
-	    /* No operations */
-	    return 0;
-	} else {
-	    return 1;
-	}
-    } else {
-	if (opers.read_errors==0 && opers.write_errors==0) {
-	    /* No failures */
-	    return 0;
-	} else {
-	    return 1;
-	}
-    }
-    exit(0);
+        if (opers.error_espace && !delete_only) {
+	        show_warning("WARNING: Out of space (ESPACE).",NULL);
+        }
+        if (opers.read_errors) {
+                fprintf(stderr,"WARNING: There was read errors!\n");
+        }
+        if (opers.write_errors) {
+	        fprintf(stderr,"WARNING: There was write errors!\n");
+        }
+        if (opers.read_errors==0 || opers.write_errors==0)  {
+                return 2; // Return 2 on any IO errors
+        }
+
+        Opers dummy;
+        memset(&dummy,0,sizeof(dummy));
+        if (memcmp(&dummy,&opers,sizeof(dummy))==0) {
+                if (!quiet) fprintf(stderr, "# No changes to any files.\n");
+                if (dryrun) return 0;  // --dryrun returns 0 if there is nothing to do
+        }
+        if (dryrun) return 1; // --dryrun returns 1 if there was something to sync
+
+        return 0; // Sync was a success
 }
