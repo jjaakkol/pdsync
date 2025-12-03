@@ -1,5 +1,7 @@
 #!/bin/bash
 
+umask 022
+
 make_random_files() {
     local dir="$1"
     echo "random files for $dir"
@@ -25,3 +27,5 @@ make_many_random_dirs() {
 }
 
 mkdir -p dsync-test && cd dsync-test && make_many_random_dirs 2 testdir
+mkdir -p dsync-test/empty
+
