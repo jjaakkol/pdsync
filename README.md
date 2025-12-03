@@ -7,8 +7,11 @@ A high-performance, multi-threaded tool for synchronizing local directories.
 - Parallel directory traversal and file copying
 - Preserves file metadata (permissions, timestamps, etc.)
 - Efficient job queue and thread management
-- Supports hard links, symlinks, and special files
+- Supports symlinks, fifos
 - Progress reporting
+- Parellel file removal
+- Statistics
+- Can tag already synced directories with extended attributes
 
 ## Usage
 
@@ -26,16 +29,19 @@ make
 
 ## TODO
 
-- Parallel file removal
 - Improved scheduling
 - Faster directory scanning
 - Simplify unnecessarily complicated code
 - Fix hard link support
+- Fix sparse file support
 - Implement `cp` command
 - Implement `rm` command
 - Implement `find` command
 - Proper sparse file handling
+
+## DONE
 - In-place file updating
+
 
 ## License
 
