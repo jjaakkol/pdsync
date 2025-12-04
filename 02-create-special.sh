@@ -6,7 +6,7 @@ echo "This is a testdir for dir synchronization" > README.txt
 mkdir -vp symlinks
 ( cd symlinks && ln -vfs ../*5* .)
 mkdir -vp hardlinks
-( cd hardlinks && ln -vf ../*14*/testfile*12* .)
+( cd hardlinks && ln -vf ../*14*/testfile*012* .)
 rm  -v -f testfifo && mkfifo testfifo
 echo Beginning. > sparsefile
 truncate -s 1M sparsefile
@@ -24,4 +24,6 @@ for u in 4 6 7; do
 done
 rm -f chmod/noaccess
 touch -m 000 chmod/noaccess
+touch zerosizefile
+mkdir emptydir
 

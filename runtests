@@ -1,0 +1,22 @@
+#!/bin/bash
+export TIMEFORMAT='%2Rs (%P%% CPU)'
+
+runtest() {
+  printf "# Running test: %40s\n" "$*"
+  eval time $@
+  echo "Return value $?"
+  sync
+}
+
+echo "# pdsync sync test"
+runtest ./pdsync --threads=32 --archive --delete dsync-test dsync-target
+echo "# pdsync verify test. No output."
+runtest ./pdsync -i --threads=32 --archive --delete dsync-test dsync-target
+echo "# rsync verify test. No output."
+runtest rsync --archive -i --delete dsync-test/. dsync-target/.
+echo "# pdsync delete test"
+runtest ./pdsync --threads=32 --archive --delete dsync-test/emptydir dsync-target
+echo "# rsync sync test. No output."
+runtest rsync --archive --delete dsync-test/. dsync-target/.
+echo "# rsync delete test. No output."
+runtest rsync --archive --delete dsync-test/emptydir/. dsync-target/.
