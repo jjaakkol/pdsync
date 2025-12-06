@@ -203,7 +203,8 @@ void write_error(const char *why, const Directory *d, const char *file) {
 	        atomic_fetch_add(&opers.error_espace, 1);
         }
         atomic_fetch_add(&opers.write_errors, 1);
-        show_error("Write error. Exiting immediately.", file_path(d, file));
+        show_error(why, file_path(d, file));
+        fprintf(stderr,"Write error, exiting immediately\n");
         exit(2);
 }
 
@@ -560,13 +561,13 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         	thisdir.st_ino==source_stat.st_ino) {
         	/* This can happen when doing something like 
 	        * dsync /tmp/foo/bar /tmp/foo */
-        	show_warning("Skipping removal of source directory", dir_path(to));
+        	show_warning("Skipping removal of source directory", file_path(to, tentry->name));
 	        goto fail;
         }
         if (thisdir.st_dev==target_stat.st_dev &&
 	        thisdir.st_ino==target_stat.st_ino) {
 	        /* This should only happen on badly screwed up filesystems */
-	        show_warning("Skipping removal of target directory (broken filesystem?).\n", dir_path(to));
+	        show_warning("Skipping removal of target directory (broken filesystem?).\n", file_path(to, tentry->name));
 	        goto fail;
         }
   
@@ -588,7 +589,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         return ret;
 
  fail:
-        write_error("remove_hierarchy", del, tentry->name);
+        write_error("remove_hierarchy", to, tentry->name);
         ret=-1;
         goto cleanup;
 }
