@@ -152,37 +152,39 @@ extern int debug;
     } \
 } while(0)
 
+
+// Interface to dsync.c
+void show_error(const char *why, const char *file);
+void show_error_dir(const char *message, Directory *parent, const char *file);
+void set_thread_status_f(const char *file, const char *s, const char *func, int mark);
+void print_progress();
+
+// Interface to jobs.c
 #define DSYNC_FILE_WAIT -123 // Wait for all jobs to attached to From Entry to finish before starting job
 #define DSYNC_DIR_WAIT  -124 // Wait for all jobs attached to to Directory to finish before starting job
-Job *submit_job_real(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
-#define submit_job(from, source, to, target, offset, callback)  do { DEBUG("submit_job callback=%s\n",#callback); submit_job_real(from, source, to, target, offset, callback); } while(0)
-Job *submit_job_first(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
-void job_release(Job *j);
-void job_lock();
-void job_unlock();
-
-Entry *directory_lookup(const Directory *d, const char *name);
-Directory *scan_directory(Directory *parent, Entry *e);
-void show_error(const char *why, const char *file);
-Entry *init_entry(Entry * entry, int dfd, char *name);
-void start_job_threads(int threads);
-void d_freedir(Directory *dir);
-int wait_for_entry(Entry *job);
-const char *dir_path(const Directory *d);
-const char *file_path(const Directory *d, const char *f);
-void show_error_dir(const char *message, Directory *parent, const char *file);
-JobResult run_one_job(Job *j);
-JobResult run_any_job();
-int print_jobs(FILE *f);
-void set_thread_status_f(const char *file, const char *s, const char *func, int mark);
 #define set_thread_status(file,s) set_thread_status_f(file, s, __func__, 0)
 #define mark_job_start(file,s) set_thread_status_f(file, s, __func__, 1)
-void print_progress();
+#define submit_job(from, source, to, target, offset, callback)  do { DEBUG("submit_job callback=%s\n",#callback); submit_job_real(from, source, to, target, offset, callback); } while(0)
+
+Job *submit_job_real(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+Job *submit_job_first(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+void job_lock();
+void job_unlock();
+JobResult run_any_job();
+void start_job_threads(int threads);
+int print_jobs(FILE *f);
+
+// Interface to directory.c
+Entry *directory_lookup(const Directory *d, const char *name);
+Directory *scan_directory(Directory *parent, Entry *e);
+Entry *init_entry(Entry * entry, int dfd, char *name);
+void d_freedir(Directory *dir);
+const char *dir_path(const Directory *d);
+const char *file_path(const Directory *d, const char *f);
 int dir_open(Directory *d);
 int dir_close(Directory *d);
 int dir_openat(Directory *d, const char *f);
-void d_freedir(Directory *dir);
-void dir_claim(Directory *dir);
+oid dir_claim(Directory *dir);
 
 static inline const struct stat *entry_stat(const Entry *e) {
         assert(e);
