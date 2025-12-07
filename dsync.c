@@ -48,7 +48,7 @@ static int check=0;
 static int reflink=0;
 int privacy=0;
 int progress=0;
-static int threads=4;
+int threads=4;
 int debug=0;
 const char *sync_tag=NULL;
 const char *sync_tag_name="user.pdsync";
@@ -368,8 +368,8 @@ static void print_scans(const Scans *scans) {
     if (scans->files_skipped) {
         printf("%8d files skipped\n",scans->files_skipped);
     }
-    if (scans->jobs) {
-        printf("%8d total number of jobs run\n", scans->jobs);
+    if (scans->jobs_run) {
+        printf("%8lld total number of jobs run\n", scans->jobs_run);
     }
     if (scans->jobs_waiting) {
         printf("%8d jobs waiting\n", scans->jobs_waiting);
@@ -854,7 +854,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         if (entry_stat(fentry)->st_size==0) goto end; // Zero size file, skip copy
                 } else {
                         for (int i=0; i<num_jobs; i++) {
-                                submit_job(from, fentry, to, target, copy_job_size*i, copy_regular);
+                                submit_or_run_job(from, fentry, to, target, copy_job_size*i, copy_regular);
                         }
                         /* The metadata needs to be synced last. If there are multiple copy jobs, submit it last */
                         if (num_jobs>1) submit_job(from, fentry, to, target, DSYNC_FILE_WAIT, sync_metadata);
@@ -1463,9 +1463,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 		                }
 	                }
 
-                        /* We could create the target in a different job, but I measured this to be faster */
-                        //submit_job(from, fentry, to, fentry->name, i, create_target);
-                        create_target(from, fentry, to, fentry->name, i);
+                        submit_or_run_job(from, fentry, to, fentry->name, i, create_target);
 
                 	/* Save paths to entries having link count > 1 for making hard links */
                 	if (preserve_hard_links && entry_stat(fentry)->st_nlink>1 && !S_ISDIR(entry_stat(fentry)->st_mode)) {

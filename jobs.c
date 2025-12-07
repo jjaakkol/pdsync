@@ -136,6 +136,7 @@ JobResult run_one_job(Job *j)
                         j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
                         pthread_mutex_lock(&mut);
                         mark_job_start(file_path(j->to, j->target), "job ended");
+                        atomic_fetch_add(&scans.jobs_run, 1);
                 }
                 j->state = JOB_READY;
                 JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
@@ -233,7 +234,6 @@ Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *targe
         if (job->to) dir_claim(job->to);
         for (Directory *d=to; d; d=d->parent) d->jobs++; // Count target directory running jobs until dir root
 
-        scans.jobs++;
         if (++scans.queued > scans.maxjobs)
                 scans.maxjobs = scans.queued;
 
@@ -272,6 +272,16 @@ Job *submit_job_real(Directory *from, Entry *fentry, Directory *to, const char *
         pthread_cond_broadcast(&cond);
         job_unlock();
         return job;
+}
+
+// Optiomization: if queuess are full skip job submission and run it directly
+void submit_or_run_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
+        if (scans.jobs_waiting < threads * 4) {
+                submit_job(from, fentry, to, target, offset, callback);
+                return;
+        }
+        callback(from , fentry, to, target, offset);
+        atomic_fetch_add(&scans.jobs_run, 1);
 }
 
 Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {

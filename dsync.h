@@ -80,10 +80,10 @@ typedef struct {
         atomic_int read_directory_jobs;
         atomic_int read_directory_miss;
 
-        int jobs;
         int maxjobs;
         int queued;
-        int jobs_waiting; // Jobs waiting for other jobs to finish
+        int jobs_waiting;              // Jobs waiting for other jobs to finish
+        atomic_llong jobs_run;         // Number of jobs already finished
 
         int dirs_active;
         int entries_active;
@@ -140,11 +140,6 @@ static inline void *my_realloc(void *ptr, size_t size) {
 }
 #define strdup(X) ( use_my_strdup_instead(X) )
 
-extern int progress;
-extern int privacy;
-extern int recursive;
-extern int debug;
-
 #define DEBUG(...) do { \
     if (debug > 0) { \
         fprintf(stderr, "[%-12s:%20s():%4d] ", __FILE__, __func__, __LINE__); \
@@ -154,6 +149,12 @@ extern int debug;
 
 
 // Interface to dsync.c
+extern int progress;
+extern int privacy;
+extern int recursive;
+extern int debug;
+extern int threads;
+
 void show_error(const char *why, const char *file);
 void show_error_dir(const char *message, Directory *parent, const char *file);
 void set_thread_status_f(const char *file, const char *s, const char *func, int mark);
@@ -167,6 +168,7 @@ void print_progress();
 #define submit_job(from, source, to, target, offset, callback)  do { DEBUG("submit_job callback=%s\n",#callback); submit_job_real(from, source, to, target, offset, callback); } while(0)
 
 Job *submit_job_real(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
+void submit_or_run_job(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 Job *submit_job_first(Directory *from, Entry *source, Directory *to, const char *target, off_t offset, JobCallback *callback);
 void job_lock();
 void job_unlock();
@@ -184,7 +186,7 @@ const char *file_path(const Directory *d, const char *f);
 int dir_open(Directory *d);
 int dir_close(Directory *d);
 int dir_openat(Directory *d, const char *f);
-oid dir_claim(Directory *dir);
+void dir_claim(Directory *dir);
 
 static inline const struct stat *entry_stat(const Entry *e) {
         assert(e);
