@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+cd dsync-test
+mkdir -p reflink
+for d in testdir*; do
+  mkdir -p reflink/$d
+  ../pdsync -P -i --archive --delete --reflink $d reflink/$d
+done
