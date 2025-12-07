@@ -483,6 +483,7 @@ void print_progress() {
         static int last_synced=0;
         static long long last_bytes;
         static long long last_ns=0;
+        static long long last_jobs_run=0;
 
         char B[32];
         char BpS[32];
@@ -501,12 +502,13 @@ void print_progress() {
         int files_synced=atomic_load(&scans.files_synced);
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
         fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s | %d/%d queued|%3d idle |\n",
+        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle |\n",
                 files_synced,
                 files_total, 
                 1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
+                1000000000.0 *(scans.jobs_run-last_jobs_run) / (now_ns-last_ns),
                 scans.queued, scans.maxjobs,
                 scans.idle_threads
         );
@@ -517,10 +519,12 @@ void print_progress() {
         last_synced=files_synced;
         last_bytes=opers.bytes_copied;
         last_ns=now_ns;
+        last_jobs_run=scans.jobs_run;
 }
 
 // Unlink one target entry, which is not a directory
 int unlink_entry(Directory *parent, Entry *tentry) {
+        assert(delete);
         int ret=0;
         const char *name=tentry->name;
 
@@ -1179,10 +1183,15 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 ) {
                         /* skip, times were right */
                 } else if (!dryrun && utimensat(dfd, target, tmp, AT_SYMLINK_NOFOLLOW)<0) {
-                        write_error("utimensat", to, target);
-                        ret=-1;
+                        if (S_ISLNK(entry_stat(fentry)->st_mode)) {
+                                // Filesystem may not support utimensat() on symlinks
+                                show_error_dir("Warning: utimensat() failed for symlink. Ignoring this.", to, target);
+                        } else {
+                                write_error("utimensat", to, target);
+                                ret=-1;
+                        }
                 } else {
-                        if (itemize) item("TI", to, target);
+                        if (itemize) item("touch", to, target);
                         atomic_fetch_add(&opers.times,1);
                 }
         }
@@ -1281,9 +1290,9 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
     
         } else if (S_ISLNK(entry_stat(fentry)->st_mode)) {
         	if (!preserve_links) goto out;
-	        item("SL",to,target);
+	        item("ln -s",to,target);
 	        if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
-                        write_error("symlink", to, target);
+                        write_error("symlinkat", to, target);
                         goto fail;
                 } else {
 	                atomic_fetch_add(&opers.symlinks_created, 1);
@@ -1414,42 +1423,73 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                         continue;
                 }
 
-                set_thread_status(file_path(to, fentry->name), "sync file");
+                set_thread_status(file_path(to, fentry->name), "sync entry");
 
 	        snprintf(todir+tolen,MAXLEN-tolen,"/%s",fentry->name);
 	
 	        /* Lookup the existing file */
 	        if (to) tentry=directory_lookup(to,todir+tolen+1);
 
-	        /* Check if the already existing target file is OK, or should we remove it */
+	        // Check if the already existing target entry: keep it, update it or remove it
 	        if (tentry) {
                         if (entry_changed(fentry,tentry)) {
-                        	if (!S_ISDIR(entry_stat(fentry)->st_mode) || 
-                        	!S_ISDIR(entry_stat(tentry)->st_mode)) {
-                                                if ( S_ISREG(entry_stat(fentry)->st_mode) && S_ISREG(entry_stat(tentry)->st_mode) ) {
-                                                // Try to keep existing file.
+                                // Target entry exists but needs sync or removing
+                                if (S_ISDIR(entry_stat(tentry)->st_mode)) {
+                                        // Target is a directory
+                                        if (!S_ISDIR(entry_stat(fentry)->st_mode)) {
+                                                if (delete) {
+                                                        // Remove a target directory that is in the way
+                                                        unlink_entry(to, tentry);
+                                                } else {
+                                                        write_error("Directory is in the way. Consider --delete", to, tentry->name);
+                                                        continue;
+                                                }
+                                        }
+                                } else if (S_ISREG((entry_stat(tentry)->st_mode))) {
+                                        // Target is a regular file
+                                        if (S_ISREG(entry_stat(fentry)->st_mode)) {
+                                                // Source is also a regular file: keep existing file
                                                 atomic_fetch_add(&opers.files_updated,1);
-                                                if (itemize>1) item("KEEP", to, tentry->name );
-                                        } else if (delete || !S_ISDIR(entry_stat(tentry)->st_mode)) {
-			                        /* Entry exists, but it is OK to remove it */
-			                        unlink_entry(to, tentry);
-		                        } else {
-			                        write_error("Directory is in the way. Consider --delete", to, tentry->name);
-			                        continue;
-		                        }
-		                }
+                                                if (itemize>1) item("# updating", to, tentry->name );
+                                        } else  if (delete) {
+                                                unlink_entry(to, tentry);
+                                        } else {
+                                                write_error("File is in the way. Consider --delete", to, tentry->name);
+                                                continue;
+                                        }
+                                } else if (S_ISLNK(entry_stat(tentry)->st_mode)) {
+                                        // Target is a symlink
+                                        if (S_ISLNK(entry_stat(fentry)->st_mode) && strcmp(fentry->link,tentry->link)==0) {
+                                                // Source is the same symlink, but metadata has changed
+                                                if (itemize>1) item("# symlink ok", to, tentry->name );
+                                                sync_metadata(from, fentry, to, tentry->name, 0);
+                                                continue;
+                                        } else if (delete) {
+                                                unlink_entry(to, tentry); // Unlink symlink
+                                        } else {
+                                                write_error("Symlink is in the way. Consider --delete", to, tentry->name);
+                                                continue;
+                                        }
+                                } else {
+                                        // Target is some other file type.
+                                        if (delete) {
+                                                unlink_entry(to, tentry);
+                                        } else {
+                                                write_error("File is in the way. Consider --delete", to, tentry->name);
+                                                continue;
+                                        }
+                                }
 	                } else {
-                                /* No changes to entry, it has been syncred. We don't need to do anything. Continue. */
+                                // The target entry was found and is up to date
                                 atomic_fetch_add(&scans.files_synced,1);
-		                if (itemize>=2) item("OK",to,todir);
+		                if (itemize>=2) item("# no changes", to, todir);
 		                continue;
 	                }
 	        }
 
                 if (!delete_only) {
                 	/* Check for hard links */
-                	if (entry_stat(fentry)->st_nlink>1 &&
-                  !S_ISDIR(entry_stat(fentry)->st_mode)) {
+                        if (entry_stat(fentry)->st_nlink>1 && !S_ISDIR(entry_stat(fentry)->st_mode)) {
 		                static int link_count_warned=0;
 		                /* Found a hard link */
 		                if (preserve_hard_links) {
