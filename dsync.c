@@ -19,6 +19,8 @@
 #include "dsync.h"
 #include <sys/mman.h>
 #include <sys/xattr.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
 
 // User selected options
 static char* const *static_argv;
@@ -43,6 +45,7 @@ static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
 static int check=0;
+static int reflink=0;
 int privacy=0;
 int progress=0;
 static int threads=4;
@@ -67,12 +70,15 @@ Exclude **last_excluded=&exclude_list;
 static char s_topath[MAXLEN];
 static char s_frompath[MAXLEN];
 Entry source_root;
-static struct stat target_stat;
 static struct stat source_stat;
+struct {
+        struct stat stat;
+} target_root;
 
 typedef struct {
-        int dirs_created;
-        int files_copied;
+        atomic_llong dirs_created;
+        atomic_llong files_copied;
+        atomic_llong files_reflinked;
         atomic_llong files_updated;
         int entries_removed;
         int dirs_removed;
@@ -119,7 +125,8 @@ enum {
         SYNC_TAG_NAME=260,
 	DEBUG=261,
         CHECK=262,
-        STATS=263
+        STATS=263,
+        REFLINK=264
 };
 
 
@@ -153,6 +160,7 @@ static struct option options[]= {
         { "debug",           0, NULL, DEBUG },
         { "check",           0, NULL, CHECK },
         { "stats",           0, NULL, STATS },
+        { "reflink",         0, NULL, REFLINK },
         { NULL, 0, NULL, 0 }
 };
 
@@ -300,6 +308,7 @@ static int parse_options(int argc, char *argv[]) {
         case SYNC_TAG: sync_tag=optarg; break;
         case DEBUG: debug++; fprintf(stderr,"Debug: %d\n",debug); break;
 	case CHECK: check=1; break;
+        case REFLINK: reflink=1; break;
         case STATS: stats++; break;
 	case 'a':
 	    recursive=1;
@@ -405,7 +414,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
                 now.tv_sec / 3600LL, (now.tv_sec / 60LL) % 60, now.tv_sec % 60LL, now.tv_nsec/1000000LL % 1000,
                 100.0 * (now.tv_sec*1000000000 + now.tv_nsec) / ns);
         if (stats->dirs_created) {
-                fprintf(stream, "%8d directories created\n", stats->dirs_created);
+                fprintf(stream, "%8lld directories created\n", stats->dirs_created);
         }
     if (stats->dirs_removed) {
         fprintf(stream, "%8d directories removed\n", stats->dirs_removed);
@@ -414,8 +423,11 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream, "%8d entries removed\n", stats->entries_removed);
     }
     if (stats->files_copied) {
-        fprintf(stream, "%8d files copied, %.1ff/s\n", stats->files_copied,
+        fprintf(stream, "%8lld files copied, %.1ff/s\n", stats->files_copied,
                 stats->files_copied*1000000000.0/ns);
+    }
+    if (stats->files_reflinked) {
+        fprintf(stream, "%8lld files reflinked", stats->files_reflinked);
     }
     char buf[32];
     fprintf(stream, "%8s bytes copied, ", format_bytes(stats->bytes_copied, buf));
@@ -564,8 +576,8 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         	show_warning("Skipping removal of source directory", file_path(to, tentry->name));
 	        goto fail;
         }
-        if (thisdir.st_dev==target_stat.st_dev &&
-	        thisdir.st_ino==target_stat.st_ino) {
+        if (thisdir.st_dev==target_root.stat.st_dev &&
+	        thisdir.st_ino==target_root.stat.st_ino) {
 	        /* This should only happen on badly screwed up filesystems */
 	        show_warning("Skipping removal of target directory (broken filesystem?).\n", file_path(to, tentry->name));
 	        goto fail;
@@ -757,6 +769,7 @@ int copy_regular_sendfile(int fromfd, int tofd, off_t filesize, off_t offset) {
         return 0;
 }
 
+// FIXME: split copy job submitting and actual copy function
 int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int fromfd=-1;
         int tofd=-1;
@@ -785,7 +798,6 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         num_jobs= (entry_stat(fentry)->st_size + copy_job_size - 1) / copy_job_size;
 
         to_dfd = dir_open(to);
-        // Use the source entry's permission bits (mask out file type bits) when creating target.
         // mmap() IO needs RDWR access
         tofd = openat(to_dfd, target, O_RDWR | O_CREAT | O_NOFOLLOW,  0777);
         if(tofd<0) {
@@ -795,7 +807,27 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         /* offset -1 means that this is the first job operating on this file */
         if (offset==-1) {
-                set_thread_status(file_path(to,target),"ftruncate");
+
+                // --reflink support happens here
+                if (reflink) {
+                        set_thread_status(file_path(to,target),"reflink clone");
+                        int rc = ioctl(tofd, FICLONE, fromfd);
+                        if (rc == 0) {
+                                /* Cloned successfully */
+                                item("cp --reflink", to, target);
+                                atomic_fetch_add(&opers.files_reflinked, 1);
+                                offset=0;
+                                num_jobs=1;
+                                goto end;
+                        } else {
+                                if (errno==EOPNOTSUPP || errno==ENOTTY || errno==EINVAL || errno==EXDEV) {
+                                        write_error("Reflink not supported on filesystem", to, target);
+                                } else {
+                                        write_error("Reflink ioctl failed", to, target);
+                                }
+                                goto fail;
+                        }
+                }
 
                 /* Check for sparse file */
                 if ( entry_stat(fentry)->st_size/512 > entry_stat(fentry)->st_blocks ) {
@@ -806,9 +838,10 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         }
 	        }
 
-                // If size doesn't match trcuncate the target file
+                // If size doesn't match fruncate the target file
                 Entry *tentry=directory_lookup(to, target);
                 if (!tentry || entry_stat(tentry)->st_size!=entry_stat(fentry)->st_size) {
+                        set_thread_status(file_path(to,target),"ftruncate");
                         if (ftruncate(tofd, entry_stat(fentry)->st_size) < 0) {
                                 write_error("ftruncate", to, target);
                                 goto fail;
@@ -1205,13 +1238,14 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 struct stat target_stat;
 	        if (fstatat(tofd,target,&target_stat,AT_SYMLINK_NOFOLLOW)<0) {
                         if  (errno==ENOENT ) {
-	                        item("MD",to,target);
                                 set_thread_status(file_path(to,target),"mkdir");
 	                        if (!dryrun && (mkdirat(tofd, target, 0777 )<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
                                         write_error("mkdir", to, target);
                                         goto fail;
-	                        }
-	                        opers.dirs_created++;
+	                        } else {
+                                        atomic_fetch_add(&opers.dirs_created, 1);
+                                        item("mkdir", to, target);
+                                }
                         }
                 } else if (!dryrun && !S_ISDIR(target_stat.st_mode) ) {
                         errno=ENOTDIR;
@@ -1231,13 +1265,13 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         	if (one_file_system && from->parent && entry_stat(fentry)->st_dev!=dir_stat(from->parent)->st_dev) {
 	                /* On different file system and one_file_system was given */
                         skip_entry(to,fentry);
-                } else if (entry_stat(fentry)->st_ino == target_stat.st_ino &&  entry_stat(fentry)->st_dev == target_stat.st_dev ) {
+                } else if (entry_stat(fentry)->st_ino == target_root.stat.st_ino && entry_stat(fentry)->st_dev == target_root.stat.st_dev ) {
 	                /* Attempt to recurse into target directory */
-                        show_error_dir("Skipping target directory", to, target);
+                        show_warning("skipping target directory", file_path(to, target));
 	                skip_entry(to, fentry);
                 } else if ( target_stat.st_ino == source_stat.st_ino && target_stat.st_dev == source_stat.st_dev ) {
 	                /* Attempt to recurse into source directory */
-                        show_error_dir("Skipping source directory in %s%s\n", from, target);
+                        show_warning("skipping source directory", file_path(to,target));
                         skip_entry(from, fentry);
                 } else if (recursive) {
 	                // All checks turned out green: submit a job to sync the subdirectory
@@ -1484,8 +1518,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr,"Open target directory '%s': %s\n",argv[optind+1],strerror(errno));
                 exit(1);
         }
-        fstat(sfd,&source_stat);
-        fstat(tfd,&target_stat);
+        fstat(sfd, &source_stat);
+        fstat(tfd, &target_root.stat);
 
         // Record the starting timestamp
         clock_gettime(CLOCK_BOOTTIME,&scans.start_clock_boottime);
@@ -1515,14 +1549,6 @@ int main(int argc, char *argv[]) {
         if (progress>=1) {
                 print_progress(); // One last fime
         }
-        if (!quiet) {
-                time_t now = time(NULL);
-                struct tm *t = localtime(&now);
-                char buf[64];
-
-                strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
-                printf("# Pdsync %s finished at %s\n",VERSION,buf);
-        }
 
         if (stats>0) print_opers(stdout, &opers);
         if (stats>1) print_scans(&scans);
@@ -1536,17 +1562,28 @@ int main(int argc, char *argv[]) {
         if (opers.write_errors) {
 	        fprintf(stderr,"WARNING: There was write errors!\n");
         }
-        if (opers.read_errors==0 || opers.write_errors==0)  {
-                return 2; // Return 2 on any IO errors
+        int ret=0;
+        if (opers.read_errors>0 || opers.write_errors>0)  {
+                ret=2; // Return 2 if there was any errors
+        } else {
+                Opers dummy;
+                memset(&dummy,0,sizeof(dummy));
+                if (memcmp(&dummy,&opers,sizeof(dummy))==0) {
+                        if (!quiet) fprintf(stderr, "# No changes to any files.\n");
+                } else {
+                        if (!quiet) fprintf(stderr, "# Some files were changed.\n");
+                        ret=1;  // --dryrun returns 1 if there was changes
+                }
         }
 
-        Opers dummy;
-        memset(&dummy,0,sizeof(dummy));
-        if (memcmp(&dummy,&opers,sizeof(dummy))==0) {
-                if (!quiet) fprintf(stderr, "# No changes to any files.\n");
-                if (dryrun) return 0;  // --dryrun returns 0 if there is nothing to do
-        }
-        if (dryrun) return 1; // --dryrun returns 1 if there was something to sync
+        if (!quiet) {
+                time_t now = time(NULL);
+                struct tm *t = localtime(&now);
+                char buf[64];
 
-        return 0; // Sync was a success
+                strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", t);
+                printf("# Pdsync %s finished at %s with status %d\n",VERSION, buf,ret);
+        }
+
+        return ret;
 }
