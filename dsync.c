@@ -478,12 +478,14 @@ static void print_opers(FILE *stream, const Opers *stats) {
     }
 }
 
-/* Print the progress to ttysream, obeying privacy options. Called from a thread once a second, with mutex locked */
+// Print the progress to ttysream, obeying privacy options. Called from a thread once a second
 void print_progress() {
         static int last_synced=0;
         static long long last_bytes;
         static long long last_ns=0;
         static long long last_jobs_run=0;
+        static int slow_secs=0;
+        char status[64]="";
 
         char B[32];
         char BpS[32];
@@ -499,10 +501,16 @@ void print_progress() {
                 fprintf(tty_stream,"\033[2J\033[H### Pdsync syncing '%s' -> '%s'\n", s_frompath, s_topath);
         }
         long s = now.tv_sec - scans.start_clock_boottime.tv_sec;
+
+        // Check for stalled progress
+        if (last_jobs_run==scans.jobs_run) {
+                snprintf(status, sizeof(status)-1, "stalled %ld secs", s-slow_secs);
+        } else slow_secs=s;
+
         int files_synced=atomic_load(&scans.files_synced);
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
-        fprintf(tty_stream, "PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );                
-        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle |\n",
+        fprintf(tty_stream, "# PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
+        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle | %s\n",
                 files_synced,
                 files_total, 
                 1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
@@ -510,11 +518,11 @@ void print_progress() {
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
                 1000000000.0 *(scans.jobs_run-last_jobs_run) / (now_ns-last_ns),
                 scans.queued, scans.maxjobs,
-                scans.idle_threads
+                scans.idle_threads,
+                status
         );
         if (progress>=2) print_opers(tty_stream,&opers);
         if (progress>=3) print_scans(&scans);
-        if (progress>=3) print_jobs(tty_stream);
  
         last_synced=files_synced;
         last_bytes=opers.bytes_copied;

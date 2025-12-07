@@ -154,6 +154,8 @@ extern int privacy;
 extern int recursive;
 extern int debug;
 extern int threads;
+extern FILE *tty_stream;
+
 
 void show_error(const char *why, const char *file);
 void show_error_dir(const char *message, Directory *parent, const char *file);

@@ -375,17 +375,20 @@ void start_job_threads(int job_threads)
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
                 long long now = ts.tv_sec * 1000000000L + ts.tv_nsec;
-                if (now - last_ns > 1000000000)
-                {
-                        // FIXME we are calling print_progress with lock_held and that might hang IO
-                        print_progress();
-                        last_ns = now;
-                }
                 ts.tv_sec+=1;
+                // FIXME: this can hang if IO is stalled. How?
                 if (pthread_cond_timedwait(&cond, &mut, &ts)==ETIMEDOUT)
                 {
-                        fprintf(stderr, "Slow IO detected. No jobs finished in 1s. %d idle threads.\n", scans.idle_threads);
+                        //fprintf(tty_stream, "thread timeout\n");
                         scans.slow_io_secs++;
+                }
+                if (now - last_ns > 1000000000)
+                {
+                        job_unlock();
+                        print_progress();
+                        job_lock();
+                        if (progress>=3) print_jobs(tty_stream); // print_jobs needs the lock
+                        last_ns = now;
                 }
         }
         pthread_mutex_unlock(&mut);
