@@ -67,6 +67,7 @@ typedef struct DirectoryStruct {
         int jobs;                               // Number of jobs running or queued in this directory
 } Directory;
 
+// Stats for things that are not counted as modifications
 typedef struct {
         struct timespec start_clock_boottime;
         atomic_int dirs_read;
@@ -76,6 +77,7 @@ typedef struct {
         int dirs_skipped;
         int files_skipped;
         atomic_int files_synced;
+        atomic_int hard_links_saved;
 
         atomic_int read_directory_jobs;
         atomic_int read_directory_miss;
