@@ -2,21 +2,29 @@
 export TIMEFORMAT='%2Rs (%P%% CPU)'
 
 runtest() {
-  printf "# Running test: %40s\n" "$*"
+  expect=$1
+  shift
+  printf "# Running test expecting $expect: %40s\n" "$*"
   eval time $@
-  echo "Return value $?"
+  ret=$?
+  if [ $ret != $expect ]; then
+	echo  "#### !!!! Wrong return value $ret != $expect"
+  fi
   sync
 }
 
 echo "# pdsync sync test"
-runtest ./pdsync --threads=32 --archive --delete dsync-test dsync-target
+runtest 1 ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# pdsync verify test. No output."
-runtest ./pdsync -i --threads=32 --archive --delete dsync-test dsync-target
+runtest 0 ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# rsync verify test. No output."
-runtest rsync --archive -i --delete dsync-test/. dsync-target/.
+runtest 0 rsync --archive --hard-links --sparse -i --delete dsync-test/. dsync-target/.
+echo "# pdsync --reflink test"
+mkdir -vp dsync-target/reflink
+runtest 1 ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-target dsync-target/reflink
 echo "# pdsync delete test"
-runtest ./pdsync --threads=32 --archive --delete dsync-test/emptydir dsync-target
+runtest 1 ./pdsync --stats  --threads=32 --archive --delete dsync-test/emptydir dsync-target
 echo "# rsync sync test. No output."
-runtest rsync --archive --delete dsync-test/. dsync-target/.
+runtest 0 rsync --archive --delete dsync-test/. dsync-target/.
 echo "# rsync delete test. No output."
-runtest rsync --archive --delete dsync-test/emptydir/. dsync-target/.
+runtest 0 rsync --archive --delete dsync-test/emptydir/. dsync-target/.
