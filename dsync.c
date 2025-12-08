@@ -116,6 +116,7 @@ typedef struct LinkStruct {
 
 static Link **link_htable=NULL;
 static int hash_size=1009;
+static pthread_mutex_t link_htable_mutex=PTHREAD_MUTEX_INITIALIZER;
 
 enum {
         ATIME_PRESERVE=255,
@@ -956,11 +957,14 @@ int sync_hard_link(Entry *fentry, Directory *to, Entry *tentry) {
         int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
         Link *l=NULL;
 
+        pthread_mutex_lock(&link_htable_mutex);
         // Hash table lookup for already known st_dev and st_ino pair to link to
         for(l=link_htable[hval]; l &&
                 (l->source_dev!=entry_stat(fentry)->st_dev ||
                  l->source_ino!=entry_stat(fentry)->st_ino);
 	        l=l->next);
+        pthread_mutex_unlock(&link_htable_mutex);
+
         if (l) {
                 // Match was found from has table. Here should be a hard link.
                 if (tentry) {
@@ -1001,8 +1005,7 @@ int sync_hard_link(Entry *fentry, Directory *to, Entry *tentry) {
 }
 
 // Saves link info of newly created or existing file with hard links
-// FIXME: we need lock around this
-void save_link_info(Entry *fentry, Directory *to, const char *target) {
+void save_hard_link(Entry *fentry, Directory *to, const char *target) {
         if (!preserve_hard_links || entry_stat(fentry)->st_nlink < 2 || !S_ISREG(entry_stat(fentry)->st_mode) ) {
                 return; // Nothing to save
         }
@@ -1012,6 +1015,7 @@ void save_link_info(Entry *fentry, Directory *to, const char *target) {
         if ( (dfd=dir_open(to))<0 || fstatat(dfd, target, &stat, AT_SYMLINK_NOFOLLOW)<0) {
                 write_error("save_link_info: fstatat", to, target);
         } else {
+                pthread_mutex_lock(&link_htable_mutex);
                 int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
                 Link *link=my_malloc(sizeof(Link));
 
@@ -1025,6 +1029,7 @@ void save_link_info(Entry *fentry, Directory *to, const char *target) {
                 link->next=link_htable[hval];
                 link_htable[hval]=link;
                 atomic_fetch_add(&scans.hard_links_saved,1);
+                pthread_mutex_unlock(&link_htable_mutex);
         }
         if (dfd>=0) dir_close(to);
 }
@@ -1277,7 +1282,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 	        copy_regular(from, fentry, to, target, -1);
 
                 // Save hard link info for new file
-                save_link_info(fentry, to, target);
+                save_hard_link(fentry, to, target);
                 goto out;
         }
         
@@ -1526,9 +1531,9 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	                } else {
                                 // The target entry was found and is up to date
                                 atomic_fetch_add(&scans.files_synced,1);
-		                if (itemize>=2) item("# no changes", to, todir);
+		                item2("# OK", to, todir);
                                 // However we might need to save hard link data
-                                save_link_info(fentry, to, tentry->name);
+                                save_hard_link(fentry, to, tentry->name);
                                 continue;
 	                }
 	        }
