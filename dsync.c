@@ -1445,6 +1445,9 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 item("ERROR", to_parent, target);
                 goto fail;
         }
+
+        // We can start syncing files in another thread while we are removing them here
+        submit_job(from, parent_fentry, to, target, 0 , sync_files);
     
         // If --delete clear out target directory of files which do not exist in from
         for(int to_i=0; delete && to && to_i < to->entries; to_i++) {
@@ -1456,8 +1459,6 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                         }
                 }
 	}
-
-        submit_job(from, parent_fentry, to, target, DSYNC_DIR_WAIT, sync_files);
 
 fail:
         if (from) d_freedir(from);
