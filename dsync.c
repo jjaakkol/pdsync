@@ -481,7 +481,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream, "%8lld device nodes skipped\n", stats->devs_warned);
     }
     if (stats->chown_warned) {
-        fprintf(stream, "%8lld chown faileds\n", stats->chown_warned);
+        fprintf(stream, "%8lld chown failed\n", stats->chown_warned);
     }
     if (stats->read_errors) {
         fprintf(stream, "%8lld errors on read\n", stats->read_errors);
@@ -573,7 +573,7 @@ JobResult remove_directory(Directory *ignored, Entry *tentry, Directory *del, co
                         goto fail; 
                 }
         }
-        item("RD", tentry->dir, tentry->name);
+        item("rmdir", tentry->dir, tentry->name);
         opers.dirs_removed++;
         fail:
         if (dfd>=0) dir_close(del->parent);
@@ -616,7 +616,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
                         goto fail; 
                 }
 	}
-        submit_job(NULL, tentry, del, ".", DSYNC_DIR_WAIT, remove_directory); // del is freed by remove_directory
+        submit_job(NULL, tentry, del, ".", DSYNC_DIR_WAIT, remove_directory); // del is freed by remove_directory()
         int ret=0;
 
  cleanup:
@@ -762,7 +762,7 @@ int copy_regular_sendfile(int fromfd, int tofd, off_t filesize, off_t offset) {
         while(written<to_copy) {
                 off_t chunk=to_copy-written;
 
-                // If preserver_sparse we punch holes
+                // If preserve_sparse we punch holes
                 if (preserve_sparse) {
                         off_t hole=lseek(fromfd, offset+written, SEEK_HOLE);
                         if (hole==offset+written) {
@@ -986,7 +986,7 @@ JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const 
                         item2("# Something is in the way: can't create hardlink", to, target);
                         goto out;
                 }
-                if (unlinkat(to_dfd, target, AT_SYMLINK_NOFOLLOW)<0) goto write_error;
+                if (unlinkat(to_dfd, target, 0)<0) goto write_error;
                 item("rm -f", to, target);
         }
 
@@ -1343,8 +1343,8 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         show_warning("skipping source directory", file_path(to,target));
                         skip_entry(from, fentry);
                 } else if (recursive) {
-	                // All checks turned out green: submit a job to sync the subdirectory
-                        submit_job(from, fentry, to, target, 0, sync_directory);
+	                // Submit a job to sync the subdirectory, depth first
+                        submit_job_first(from, fentry, to, target, 0, sync_directory);
                         goto out;
 	        }
     
@@ -1407,14 +1407,14 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
 
         assert(parent_fentry);
 
-        // Check if we have a already tagged a directory and can just skip it
+        // Check if we have already tagged the target directory and can just skip everything
         if (sync_tag) {
                 int fd=dir_openat(to_parent, target);
                 if (fd>=0) {
                         char buf[256];
                         size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
                         if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
-                                item("TAGGED", to_parent, target);
+                                item("# tagged", to_parent, target);
                                 scans.dirs_skipped++;
                                 close(fd);
                                 return 0;
@@ -1446,7 +1446,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 goto fail;
         }
     
-        // Schedule jobs or j
+        // If --delete clear out target directory of files which do not exist in from
         for(int to_i=0; delete && to && to_i < to->entries; to_i++) {
 	        if ( directory_lookup(from,to->array[to_i].name)==NULL) {
                         if (entry_isdir(to, to_i)) {
