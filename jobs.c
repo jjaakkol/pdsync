@@ -18,7 +18,6 @@ typedef struct JobStruct
         Directory *from;
         Entry *fentry;
         const char *target;
-        Directory *result;
         JobState state;
         struct JobStruct *next;
         JobCallback *callback;
@@ -202,7 +201,6 @@ Entry *directory_lookup(const Directory *d, const char *name) {
 /* Threads wait in this loop for jobs to run */
 void *job_queue_loop(void *arg)
 {
-
         pthread_mutex_lock(&mut);
         this_thread.prev = first_status;
         first_status = &this_thread;
