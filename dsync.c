@@ -109,8 +109,7 @@ typedef struct LinkStruct {
     ino_t source_ino;
     dev_t target_dev;
     ino_t target_ino;
-    Directory *to;
-    char *target_name;
+    char *target_path;       // Path to the link source
     struct LinkStruct *next;
 } Link;
 
@@ -971,7 +970,6 @@ JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const 
 
         JobResult ret=RET_OK;
         int to_dfd=dir_open(to);
-        int from_dfd=-1;
         struct stat ts;
         if (to_dfd<0) goto write_error;
 
@@ -993,17 +991,15 @@ JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const 
         }
 
         // Now create the hard link
-        from_dfd=dir_open(l->to);
-        if (!dryrun && linkat(from_dfd, l->target_name, to_dfd, fentry->name, 0) <0 ) 
+        if (!dryrun && linkat(AT_FDCWD, l->target_path, to_dfd, fentry->name, 0) <0 ) 
         {
                 goto write_error;
         } else {
-                if (itemize) printf("ln %s %s\n", file_path(l->to, l->target_name), file_path(to, target));
+                if (itemize) printf("ln %s %s\n", l->target_path, file_path(to, target));
                 opers.hard_links_created++;
         }
 
         out:
-        if (from_dfd>=0) dir_close(l->to);
         if (to_dfd>=0) dir_close(to);
         return ret;
 
@@ -1042,9 +1038,7 @@ int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry
                 link->source_dev=entry_stat(fentry)->st_dev;
                 link->target_ino=stat.st_ino;
                 link->target_dev=stat.st_dev;
-                link->to=to;
-                dir_claim(to);
-                link->target_name=my_strdup(fentry->name);
+                link->target_path=my_strdup(file_path(to, fentry->name));
                 link->next=link_htable[hval];
                 link_htable[hval]=link;
                 atomic_fetch_add(&scans.hard_links_saved,1);
