@@ -950,18 +950,12 @@ static int should_exclude(const Directory *from, const Entry *entry) {
 
 // Lookup a hard link entry from the hash table by source device and inode
 // Returns the Link entry if found, NULL otherwise
+// hard link mutex must be held
 Link* lookup_hard_link(dev_t source_dev, ino_t source_ino) {
         int hval=(source_ino+source_dev)%hash_size;
-        Link *l=NULL;
+        Link *l=link_htable[hval];
 
-        // Hash table lookup for already known st_dev and st_ino pair to link to
-        pthread_mutex_lock(&link_htable_mutex);
-        for(l=link_htable[hval]; l &&
-                (l->source_dev!=source_dev ||
-                 l->source_ino!=source_ino);
-	        l=l->next);
-        pthread_mutex_unlock(&link_htable_mutex);
-
+        while(l && (l->source_dev!=source_dev || l->source_ino!=source_ino) ) l=l->next;
         return l;
 }
 
@@ -969,14 +963,13 @@ Link* lookup_hard_link(dev_t source_dev, ino_t source_ino) {
 // - new file:           used as target for hard linking later
 // - existing 1st file:  used as target for hard linking later
 // - more files:         should be replaced with a hard link
-// To guarantee atomicity this is delegated to create_hard_link() job:
-JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const char * target, off_t offset) {
+// Not actually a job, but could be made to be a job. 
+JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const char * target, Link *l) {
         assert(preserve_links && entry_stat(fentry)->st_nlink > 1 && S_ISREG(entry_stat(fentry)->st_mode) );
+        assert(l);
         set_thread_status(file_path(to,target), "hard link");
 
         JobResult ret=RET_OK;
-        Link *l = lookup_hard_link(entry_stat(fentry)->st_dev, entry_stat(fentry)->st_ino);
-        assert(l);
         int to_dfd=dir_open(to);
         int from_dfd=-1;
         struct stat ts;
@@ -1028,9 +1021,10 @@ int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry
                 return 0; // Nothing to check
         }
 
-        if (!lookup_hard_link(entry_stat(fentry)->st_dev, entry_stat(fentry)->st_ino)) {
-                // FIXME: here is a race
-                // We haven't seen this hard link yet
+        pthread_mutex_lock(&link_htable_mutex);
+        Link *l = lookup_hard_link(entry_stat(fentry)->st_dev, entry_stat(fentry)->st_ino);
+        if (!l) {
+                // We haven't seen this hard link yet. Save it in hash table.
                 struct stat stat;
                 if (!tentry || !S_ISREG(entry_stat(tentry)->st_mode)) {
                         // The hard link target file has not yet been created. Create it now.
@@ -1042,7 +1036,6 @@ int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry
                 } else {
                         stat=*entry_stat(tentry);
                 }
-                pthread_mutex_lock(&link_htable_mutex);
                 int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
                 Link *link=my_malloc(sizeof(Link));
                 link->source_ino=entry_stat(fentry)->st_ino;
@@ -1057,7 +1050,9 @@ int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry
                 atomic_fetch_add(&scans.hard_links_saved,1);
                 pthread_mutex_unlock(&link_htable_mutex);
         } else {
-                create_hard_link(from, fentry, to, fentry->name, 0);
+                // We had already seen this link target. 
+                pthread_mutex_unlock(&link_htable_mutex);
+                create_hard_link(from, fentry, to, fentry->name, l);
         } 
 
         return 1;
