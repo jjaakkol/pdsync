@@ -29,9 +29,6 @@
 
 typedef enum { ENTRY_CREATED,   
                 ENTRY_INIT,
-                ENTRY_READ_QUEUE,
-                ENTRY_READING,
-                ENTRY_READ_READY,
                 ENTRY_SCAN_RUNNING,
                 ENTRY_SCAN_READY,
                 ENTRY_DELETED,
@@ -40,11 +37,11 @@ typedef enum { ENTRY_CREATED,
 
 /* Entry is a single entry in a directory */
 typedef struct {
-        EntryState state;
-        char *name;
         struct stat _stat;
+        char *name;
         char *link;
         struct DirectoryStruct *dir;            // Subdirectory if this is a directory
+        EntryState state;
 } Entry;
 
 // We keep the fd's of directories in a LRU cache to avoid closing and opening needlessly

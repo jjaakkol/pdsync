@@ -306,50 +306,25 @@ static int entrycmp(const void *x, const void *y) {
 }
 
 /* Directory read is split in two Jobs
- * - read_directory reads a directory and submits more directories to be read
- * - Doesn't stat the entries, because stats are slow and we wan't the job size quickly
+ * - read_directory reads the directory entries and is fast
+ * - Doesn't stat the entries, because stats are slow and we wan't stats of job size quickly
  */
 int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d, const char *name, off_t depth)
 {
         int allocated = 1024;
         int dfd = -1;
         DIR *d = NULL;
-        struct stat tmp_stat;
         int entries = 0;
         Dent *dents = NULL;
-
+        Directory *nd=NULL;
 
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
         assert(!parent || parent->ref>0);
 
-        if (depth>0) atomic_fetch_add(&scans.read_directory_jobs, -1);
-
-        job_lock();
-        switch (parent_entry->state) {
-                case ENTRY_CREATED:  // FIXME dsync() does not init parent_entry. It probably should
-                case ENTRY_INIT: break;
-                case ENTRY_READ_QUEUE: break;
-                case ENTRY_READING: job_unlock(); return RET_RUNNING;  /* Some other thread is already reading it */
-                case ENTRY_READ_READY: 
-                case ENTRY_SCAN_RUNNING:
-                case ENTRY_SCAN_READY:
-                        goto out; // Already done 
-                case ENTRY_FAILED: goto out;     // IO error happened. Don't retry.
-                case ENTRY_DELETED: goto out;    // Deleted already
-        }
-
-        // This thread won the race and really reads the directory.
-        // If it was called with depth=0 it was a pre read_directory miss
-        if (depth==0) atomic_fetch_add(&scans.read_directory_miss,1);
-
         set_thread_status(file_path(parent,name),"readdir");
-        Directory *nd=my_calloc(1, sizeof(Directory));
-        parent_entry->dir=nd; // will be filled when we finish
-        parent_entry->state=ENTRY_READING;
-        job_unlock();
 
-        if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL || fstat(dfd, &tmp_stat) < 0)
+        if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL)
         {
                 parent_entry->state=ENTRY_FAILED;
                 show_error_dir("open directory", parent, name);
@@ -385,37 +360,24 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
                 show_error_dir("readdir", parent, name);
                 goto fail;
         }
-        //dents = my_realloc(dents, sizeof(*dents) * entries); /* Waste less memory */
 
         /* Init the Directory structure */
+        nd=my_calloc(1, sizeof(Directory));
+        parent_entry->dir=nd;
         nd->parent = parent;
         nd->name = my_strdup(name);
         nd->parent_entry = parent_entry;
-        nd->ref = 1; // Caller claims one reference by default
+        nd->ref = 1;                                    // Caller claims one reference by default
         nd->magick = 0xDADDAD;
         nd->fd = -1;
         nd->entries=entries;
         nd->array = my_calloc(entries, sizeof(Entry));
         nd->sorted = my_calloc(entries, sizeof(Entry *));
-        if (parent) dir_claim(parent); /* Parent is referenced by this dir */
+        if (parent) dir_claim(parent);                  // Parent is referenced by this dir */
 
-        /* Init the entry array for Directories and submit jobs */
+        // Init the entry array for Directories
         for (int i = 0; i < entries; i++) {
                 nd->array[i].name=dents[i].name;
-#if 0
-                if (recursive && dents[i].d_type==DT_DIR) {
-                        Entry *e=&nd->array[i];
-                        init_entry(e, dfd, e->name);
-                        //printf("submit job %s depth %ld\n",file_path(nd, e->name), depth+1);
-                        if ( S_ISDIR(e->stat.st_mode) ) {
-                                e->state=ENTRY_READ_QUEUE;
-                                if (e->stat.st_nlink==2) {
-                                        submit_job(nd, e, NULL, e->name, depth+1, read_directory);
-                                        atomic_fetch_add(&scans.read_directory_jobs,1);
-                                }
-                        }
-                }
-#endif
         }
         free(dents);
         closedir(d);
@@ -424,12 +386,10 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         for (int i=0; i<entries; i++) nd->sorted[i]=&nd->array[i];
         qsort(nd->sorted, entries, sizeof(Entry *), entrycmp);
 
-        job_lock(); /* FIXME: maybe lru lock is enough */
         while (parent) {
                 atomic_fetch_add(&parent->descendants, entries);
                 parent=parent->parent;
         }
-        parent_entry->state=ENTRY_READ_READY;
 
         /* Update stats */
         if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max = scans.dirs_active;
@@ -437,19 +397,15 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
 
-        out: 
-        job_unlock();
         return RET_OK;
 
         fail:
-        job_lock();
         if (dfd>=0) close(dfd);
         for(int i=0; i<entries; i++) free(dents[i].name);
         free(dents);
         parent_entry->state=ENTRY_FAILED;
         parent_entry->dir=NULL;
         free(nd);
-        job_unlock();
         return RET_FAILED;
 }
 
@@ -462,20 +418,15 @@ Directory *scan_directory(Directory *parent, Entry *entry)
 
         if (entry->state==ENTRY_SCAN_READY) {
                 // Already scanned, but caller gets a new reference
-                entry->dir->ref++;
+                atomic_fetch_add(&entry->dir->ref, 1);
                 return entry->dir;
         }
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
-        while(read_directory(parent, entry, NULL, entry->name, 0)==RET_RUNNING) {
-                job_lock();
-                if (entry->state==ENTRY_READING) run_any_job();
-                job_unlock();
-        }
+        read_directory(parent, entry, NULL, entry->name, 0);
         if (entry->state==ENTRY_FAILED) return NULL;
 
         Directory *nd=entry->dir;
-        assert(entry->state==ENTRY_READ_READY);
         entry->state=ENTRY_SCAN_RUNNING;;
         assert(nd);
         set_thread_status(file_path(parent, entry->name), "scandir");
