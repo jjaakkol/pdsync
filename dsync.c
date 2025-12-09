@@ -948,90 +948,119 @@ static int should_exclude(const Directory *from, const Entry *entry) {
     return 0;
 }
 
-// Creates a hard link if a previously seen dev nr + inode nr pair is found from hash table
-// Returns 1 if hard link should be created and no more processing should be done
-int sync_hard_link(Entry *fentry, Directory *to, Entry *tentry) {
-        if (!preserve_hard_links || entry_stat(fentry)->st_nlink < 2 || !S_ISREG(entry_stat(fentry)->st_mode) ) {
-                return 0; // Nothing to check
-        }
-        int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
+// Lookup a hard link entry from the hash table by source device and inode
+// Returns the Link entry if found, NULL otherwise
+Link* lookup_hard_link(dev_t source_dev, ino_t source_ino) {
+        int hval=(source_ino+source_dev)%hash_size;
         Link *l=NULL;
 
-        pthread_mutex_lock(&link_htable_mutex);
         // Hash table lookup for already known st_dev and st_ino pair to link to
+        pthread_mutex_lock(&link_htable_mutex);
         for(l=link_htable[hval]; l &&
-                (l->source_dev!=entry_stat(fentry)->st_dev ||
-                 l->source_ino!=entry_stat(fentry)->st_ino);
+                (l->source_dev!=source_dev ||
+                 l->source_ino!=source_ino);
 	        l=l->next);
         pthread_mutex_unlock(&link_htable_mutex);
 
-        if (l) {
-                // Match was found from has table. Here should be a hard link.
-                if (tentry) {
-                        // We already have existing file
-                        if ( l->target_dev==entry_stat(tentry)->st_dev &&
-                             l->target_ino==entry_stat(tentry)->st_ino) 
-                        {
-                                // Correct link already exists
-                                item2("# hard link ok", to, tentry->name);
-                                return 1;
-                        }
-                        // The existing file should be removed if we are allowed
-                        if (!S_ISREG(entry_stat(tentry)->st_mode) && !delete)
-                        {
-                                // We aren't allowed to remove the entry
-                                item2("# Something is in the way: can't create hardlink", to, tentry->name);
-                                return 1;
-                        }
-                        // FIXME: target might be a directory
-                        unlink_entry(to, tentry);
-                }
-                // Now create the hard link
-                int from_dfd=dir_open(l->to);
-                int to_dfd=dir_open(to);
-                if (!dryrun && linkat(from_dfd, l->target_name, to_dfd, fentry->name, 0) <0 ) 
-                {
-                        write_error("linkat", to, fentry->name);
-                } else {
-	                if (itemize) printf("ln %s %s\n", file_path(l->to, l->target_name), file_path(to, fentry->name));
-                        opers.hard_links_created++;
-	        }
-                if (from_dfd>=0) dir_close(l->to);
-                if (to_dfd>=0) dir_close(to);
-	        return 1; // Link was created or failed
-        }
-        // Link was not created
-        return 0;
+        return l;
 }
 
-// Saves link info of newly created or existing file with hard links
-void save_hard_link(Entry *fentry, Directory *to, const char *target) {
-        if (!preserve_hard_links || entry_stat(fentry)->st_nlink < 2 || !S_ISREG(entry_stat(fentry)->st_mode) ) {
-                return; // Nothing to save
+// Creating hard links cases which should be handled atomically:
+// - new file:           used as target for hard linking later
+// - existing 1st file:  used as target for hard linking later
+// - more files:         should be replaced with a hard link
+// To guarantee atomicity this is delegated to create_hard_link() job:
+JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const char * target, off_t offset) {
+        assert(preserve_links && entry_stat(fentry)->st_nlink > 1 && S_ISREG(entry_stat(fentry)->st_mode) );
+        set_thread_status(file_path(to,target), "hard link");
+
+        JobResult ret=RET_OK;
+        Link *l = lookup_hard_link(entry_stat(fentry)->st_dev, entry_stat(fentry)->st_ino);
+        assert(l);
+        int to_dfd=dir_open(to);
+        int from_dfd=-1;
+        struct stat ts;
+        if (to_dfd<0) goto write_error;
+
+        if (fstatat(to_dfd, target, &ts, AT_SYMLINK_NOFOLLOW)==0) {
+                // The hard link target already exists
+                if ( l->target_dev==ts.st_dev && l->target_ino==ts.st_ino ) {
+                        // Correct link already exists
+                        item2("# hard link ok", to, target);
+                        goto out;
+                }
+                // The existing file should be removed if we are allowed to do so
+                if (!S_ISREG(ts.st_mode) && !delete) {
+                        // We aren't allowed to remove the entry
+                        item2("# Something is in the way: can't create hardlink", to, target);
+                        goto out;
+                }
+                if (unlinkat(to_dfd, target, AT_SYMLINK_NOFOLLOW)<0) goto write_error;
+                item("rm -f", to, target);
         }
 
-        struct stat stat;
-        int dfd=-1;;
-        if ( (dfd=dir_open(to))<0 || fstatat(dfd, target, &stat, AT_SYMLINK_NOFOLLOW)<0) {
-                write_error("save_link_info: fstatat", to, target);
+        // Now create the hard link
+        from_dfd=dir_open(l->to);
+        if (!dryrun && linkat(from_dfd, l->target_name, to_dfd, fentry->name, 0) <0 ) 
+        {
+                goto write_error;
         } else {
+                if (itemize) printf("ln %s %s\n", file_path(l->to, l->target_name), file_path(to, target));
+                opers.hard_links_created++;
+        }
+
+        out:
+        if (from_dfd>=0) dir_close(l->to);
+        if (to_dfd>=0) dir_close(to);
+        return ret;
+
+        write_error:
+        write_error("Failed to create hard link", to, target);
+        ret=RET_FAILED;
+        goto out;
+
+}
+
+// Returns true if a create_hard_link() job was submitted to create the target
+// so that caller chan skip rest of the processing
+int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry) {
+        if (!preserve_hard_links || entry_stat(fentry)->st_nlink < 2 || !S_ISREG(entry_stat(fentry)->st_mode) ) {
+                return 0; // Nothing to check
+        }
+
+        if (!lookup_hard_link(entry_stat(fentry)->st_dev, entry_stat(fentry)->st_ino)) {
+                // FIXME: here is a race
+                // We haven't seen this hard link yet
+                struct stat stat;
+                if (!tentry || !S_ISREG(entry_stat(tentry)->st_mode)) {
+                        // The hard link target file has not yet been created. Create it now.
+                        copy_regular(from, fentry, to, fentry->name, -1);
+                        if (file_stat(to, fentry->name, &stat) <0 ) {
+                                write_error("hard link target creation", to, fentry->name);
+                                return 1;
+                        }
+                } else {
+                        stat=*entry_stat(tentry);
+                }
                 pthread_mutex_lock(&link_htable_mutex);
                 int hval=(entry_stat(fentry)->st_ino+entry_stat(fentry)->st_dev)%hash_size;
                 Link *link=my_malloc(sizeof(Link));
-
                 link->source_ino=entry_stat(fentry)->st_ino;
                 link->source_dev=entry_stat(fentry)->st_dev;
                 link->target_ino=stat.st_ino;
                 link->target_dev=stat.st_dev;
                 link->to=to;
                 dir_claim(to);
-                link->target_name=my_strdup(target);
+                link->target_name=my_strdup(fentry->name);
                 link->next=link_htable[hval];
                 link_htable[hval]=link;
                 atomic_fetch_add(&scans.hard_links_saved,1);
                 pthread_mutex_unlock(&link_htable_mutex);
-        }
-        if (dfd>=0) dir_close(to);
+        } else {
+                create_hard_link(from, fentry, to, fentry->name, 0);
+        } 
+
+        return 1;
 }
 
 /*
@@ -1278,14 +1307,11 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         }
 
         if (S_ISREG(entry_stat(fentry)->st_mode)) {
-	        /* copy regular might submit jobs */
-	        copy_regular(from, fentry, to, target, -1);
-
-                // Save hard link info for new file
-                save_hard_link(fentry, to, target);
+                // copy regular might submit jobs
+                copy_regular(from, fentry, to, target, -1);
                 goto out;
         }
-        
+
         set_thread_status(file_path(to,target),"create");
 
         if (S_ISDIR(entry_stat(fentry)->st_mode)) {
@@ -1475,6 +1501,12 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	        /* Lookup the existing file */
 	        if (to) tentry=directory_lookup(to,todir+tolen+1);
 
+                // Check if we should just make a hard link
+                if (check_hard_link(from, fentry, to, tentry)) {
+                        // Hard link was created. Continue
+                        continue;
+                }
+
                 // Check for filetype mismatch between source and existing target
                 if (tentry) {
                         mode_t fentry_type = entry_stat(fentry)->st_mode & S_IFMT;
@@ -1490,12 +1522,6 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                                         continue;
                                 }
                         }
-                }
-
-                /* Check if we should just make a hard link */
-                if (sync_hard_link(fentry, to, tentry)) {
-                        // Hard link was made. This file is done.
-                        continue;
                 }
 
 	        // Check if the already existing target entry: keep it, update it or remove it
@@ -1532,8 +1558,6 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                                 // The target entry was found and is up to date
                                 atomic_fetch_add(&scans.files_synced,1);
 		                item2("# OK", to, todir);
-                                // However we might need to save hard link data
-                                save_hard_link(fentry, to, tentry->name);
                                 continue;
 	                }
 	        }

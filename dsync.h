@@ -191,6 +191,8 @@ int dir_open(Directory *d);
 int dir_close(Directory *d);
 int dir_openat(Directory *d, const char *f);
 void dir_claim(Directory *dir);
+int file_stat(Directory *d, const char *name, struct stat *s);
+
 
 static inline const struct stat *entry_stat(const Entry *e) {
         assert(e);

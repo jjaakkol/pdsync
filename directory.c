@@ -73,6 +73,15 @@ static void lru_close_one() {
         //printf("lru_close_one: tried %d, open %d\n",tried, open_dir_count);
 }
 
+// Helper function to fstatat a file
+int file_stat(Directory *d, const char *name, struct stat *s) {
+        int dfd=dir_open(d);
+        if (dfd<0) return -1;
+        int ret=fstatat(dfd, name, s, AT_SYMLINK_NOFOLLOW);
+        dir_close(d);
+        return ret;
+}
+
 /* Initialize a Entry when given a fd of open directory */
 Entry *init_entry(Entry *entry, int dfd, char *name)
 {
