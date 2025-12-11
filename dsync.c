@@ -518,11 +518,16 @@ void print_progress() {
         } else slow_secs=s;
 
         int files_synced=atomic_load(&scans.files_synced);
+        // FIXME: get rid of descendants
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
+        const char *less_or_equal = (scans.read_directory_jobs>0) ? "<" : "=";
+        float percent=100;
+        if (files_total>0) percent=(100.0*files_synced)/files_total;
         fprintf(tty_stream, "# PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
-        fprintf(tty_stream,"%d/%d files |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle | %s\n",
+        fprintf(tty_stream,"%d/%d files %s%2.1f%% |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle | %s\n",
                 files_synced,
-                files_total, 
+                files_total,
+                less_or_equal, percent,
                 1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
                 format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
