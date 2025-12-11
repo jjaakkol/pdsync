@@ -79,9 +79,7 @@ typedef struct {
         atomic_int files_synced;
         atomic_int hard_links_saved;
 
-        //atomic_int read_directory_jobs;
-        atomic_int read_directory_hits;
-
+        atomic_int read_directory_jobs;  // Jobs reading a Directory. When this is 0, we know how much work we have. 
         int maxjobs;
         int queued;
         int jobs_waiting;              // Jobs waiting for other jobs to finish
@@ -184,7 +182,6 @@ int print_jobs(FILE *f);
 Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *parent, Entry *e);
 Directory *read_directory(Directory *parent, Entry *parent_entry);
-JobResult directory_reader(Directory *from, Entry *parent, Directory *ignored, const char *ignored2, off_t depth);
 Entry *init_entry(Entry * entry, int dfd, char *name);
 void d_freedir(Directory *dir);
 const char *dir_path(const Directory *d);

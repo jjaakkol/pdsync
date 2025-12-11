@@ -305,9 +305,6 @@ static int entrycmp(const void *x, const void *y) {
         return strcmp((*a)->name, (*b)->name);
 }
 
-
-static pthread_mutex_t readdir_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 /* Directory read is split in two parts
  * - read_directory reads the directory entries and is fast
  * - Doesn't stat the entries, because stats are slow and we wan't stats of job size quickly
@@ -321,23 +318,15 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         Directory *nd=NULL;
         const char *name=parent_entry->name;
 
+        set_thread_status(file_path(parent, name),"readdir");
+
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
         assert(!parent || parent->ref>0);
 
-        set_thread_status(file_path(parent, name),"dir mutex");
-        pthread_mutex_lock(&readdir_mutex);
-        pthread_mutex_lock(&lru_mut);
-        if (parent_entry->state>ENTRY_INIT) {
-                atomic_fetch_add(&scans.read_directory_hits, 1);
-                pthread_mutex_unlock(&lru_mut);
-                pthread_mutex_unlock(&readdir_mutex);
-                return parent_entry->dir;
-        }
+        assert(parent_entry->state==ENTRY_CREATED || parent_entry->state==ENTRY_INIT);
         parent_entry->state=ENTRY_READ_RUNNING;
-        pthread_mutex_unlock(&lru_mut);
 
-        set_thread_status(file_path(parent, name),"readdir");
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL)
         {
                 parent_entry->state=ENTRY_FAILED;
@@ -415,7 +404,6 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
         parent_entry->state=ENTRY_READ_READY;
-        pthread_mutex_unlock(&readdir_mutex);
         return nd;
 
         fail:
@@ -425,7 +413,6 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         parent_entry->state=ENTRY_FAILED;
         parent_entry->dir=NULL;
         free(nd);
-        pthread_mutex_unlock(&readdir_mutex);
         return NULL;
 }
 
@@ -442,8 +429,10 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         }
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
-        read_directory(parent, entry);
         if (entry->state==ENTRY_FAILED) return NULL;
+        if (entry->state<ENTRY_READ_RUNNING) {
+                read_directory(parent, entry);
+        }
 
         Directory *nd=entry->dir;
         entry->state=ENTRY_SCAN_RUNNING;;
@@ -465,33 +454,5 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         entry->state=ENTRY_SCAN_READY;
         assert(nd->ref>0);
         return nd;
-}
-
-// Job to pre-read Directories
-// This is very racy: other threads might free the directory while we are still trying to read it
-JobResult directory_reader(Directory *from, Entry *parent, Directory *ignored, const char *ignored2, off_t depth) {
-        DEBUG("directory_reader depth %ld\n", depth);
-        for(int i=0; i<from->entries; i++) {
-                if (from->array[i].state==ENTRY_INIT && entry_isdir(from, i) && !dir_entry(from,i)->dir ) {
-                        read_directory(from, dir_entry(from, i));
-                }
-        }
-        // FIXME: race with from(from,i)->dir
-        for(int i=0; i<from->entries; i++) {
-                if (dir_entry(from,i)->dir) {
-                        //submit_or_run_job(dir_entry(from,i)->dir, dir_entry(from,i), NULL, NULL, depth+1, directory_reader);
-                        directory_reader(dir_entry(from,i)->dir, dir_entry(from,i), NULL, NULL, depth+1);
-                }
-        }
-#if 0
-        for(int i=0; i<from->entries; i++) {
-                pthread_mutex_lock(&lru_mut);
-                if (dir_entry(from,i)->dir) d_freedir_locked(dir_entry(from,i)->dir);
-                pthread_mutex_unlock(&lru_mut);
-
-        }
-#endif
-        if (depth==0) fprintf(stderr,"directory_reader done %ld\n", depth);
-        return RET_OK;
 }
 

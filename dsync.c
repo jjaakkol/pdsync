@@ -400,8 +400,8 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
     }
-    if (scans->read_directory_hits>=0) {
-	printf("%8d read directory hits\n",scans->read_directory_hits);
+    if (scans->read_directory_jobs>0) {
+	printf("%8d read directory jobs left\n",scans->read_directory_jobs);
     }
 }
 
@@ -1470,10 +1470,15 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                 }
 
                                 // Now we are allowed to submit the depth+1 job
+                                atomic_fetch_add(&scans.read_directory_jobs, 1);
                                 submit_job_first(from, fentry, to, target, depth+1, sync_directory);
                         }
                 }
         }
+
+        // Read directory part had ended.
+        atomic_fetch_add(&scans.read_directory_jobs, -1);
+
 
         from=scan_directory(from_parent, parent_fentry);
         if (from==NULL) {
@@ -1670,9 +1675,10 @@ int main(int argc, char *argv[]) {
         }
 
         init_entry(&source_root, sfd, s_frompath);
-        submit_job(NULL, &source_root, NULL, s_topath, 0, sync_directory);
 
         // start the threads, job queue and wait the submitted job to finish
+        atomic_fetch_add(&scans.read_directory_jobs, -1);
+        submit_job(NULL, &source_root, NULL, s_topath, 0, sync_directory);
         start_job_threads(threads);
 
         // Finished. Show all the stats
