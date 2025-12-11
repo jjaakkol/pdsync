@@ -1434,7 +1434,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                         unlink_file(to_parent, target);
                                 } else {
                                         errno=ENOTDIR;
-                                        write_error("Existing target is not a directory and --delete is not in use:", to, target);
+                                        write_error("Existing target is not a directory and --delete is not in use:", to_parent, target);
                                         dir_close(to_parent);
                                         goto fail;
                                 }
@@ -1442,11 +1442,11 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 }
                 if (errno==ENOENT || (!S_ISDIR(target_stat.st_mode)) ) {
                         if (!dryrun && (mkdirat(tofd, target, 0777 )<0) ) {
-                                write_error("mkdir", to, target);
+                                write_error("mkdir", to_parent, target);
                                 goto fail;
                         } else {
                                 atomic_fetch_add(&opers.dirs_created, 1);
-                                item("mkdir", to, target);
+                                item("mkdir", to_parent, target);
                         }
                 }
 
