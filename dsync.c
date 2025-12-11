@@ -1365,6 +1365,23 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 
 JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset);
 
+JobResult sync_remove(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t depth) {
+        // If --delete clear out target directory of files which do not exist in from
+        if (delete) {
+                set_thread_status(dir_path(from), "deleting files");
+                for(int to_i=0; to && to_i < to->entries; to_i++) {
+	                if ( directory_lookup(from,to->array[to_i].name)==NULL) {
+                                if (entry_isdir(to, to_i)) {
+                                        submit_job_first(NULL, &to->array[to_i], to, NULL, depth+1, remove_hierarchy);
+                                } else {
+	                                unlink_entry(to, dir_entry(to, to_i));
+                                }
+                        }
+                }
+	}
+        return RET_OK;
+}
+
 JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t depth) {
         Directory *to=NULL;
         assert(parent_fentry);
@@ -1501,22 +1518,9 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 goto fail;
         }
 
-        // We can start syncing files in another thread while we are removing them here
-        submit_job(from, parent_fentry, to, target, 0, sync_files);
-
-        // If --delete clear out target directory of files which do not exist in from
-        if (delete) {
-                set_thread_status(file_path(to_parent, target), "deleting files");
-                for(int to_i=0; to && to_i < to->entries; to_i++) {
-	                if ( directory_lookup(from,to->array[to_i].name)==NULL) {
-                                if (entry_isdir(to, to_i)) {
-                                        submit_job_first(NULL, &to->array[to_i], to, NULL, depth+1, remove_hierarchy);
-                                } else {
-	                                unlink_entry(to, dir_entry(to, to_i));
-                                }
-                        }
-                }
-	}
+        // We can start removing files in another thread while we are syncing them here
+        if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
+        submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
 
 fail:
         if (from) d_freedir(from);
