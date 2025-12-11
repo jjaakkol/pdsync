@@ -27,8 +27,11 @@
 /* Maximum pathname lenght dsync can handle. FIXME: make dynamic */
 #define MAXLEN 16384
 
-typedef enum { ENTRY_CREATED,   
+typedef enum { ENTRY_CREATED,
+                ENTRY_DIR,  
                 ENTRY_INIT,
+                ENTRY_READ_RUNNING,
+                ENTRY_READ_READY,
                 ENTRY_SCAN_RUNNING,
                 ENTRY_SCAN_READY,
                 ENTRY_DELETED,
@@ -76,8 +79,8 @@ typedef struct {
         atomic_int files_synced;
         atomic_int hard_links_saved;
 
-        atomic_int read_directory_jobs;
-        atomic_int read_directory_miss;
+        //atomic_int read_directory_jobs;
+        atomic_int read_directory_hits;
 
         int maxjobs;
         int queued;
@@ -180,6 +183,8 @@ int print_jobs(FILE *f);
 // Interface to directory.c
 Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *parent, Entry *e);
+Directory *read_directory(Directory *parent, Entry *parent_entry);
+JobResult directory_reader(Directory *from, Entry *parent, Directory *ignored, const char *ignored2, off_t depth);
 Entry *init_entry(Entry * entry, int dfd, char *name);
 void d_freedir(Directory *dir);
 const char *dir_path(const Directory *d);
@@ -190,7 +195,7 @@ int dir_openat(Directory *d, const char *f);
 void dir_claim(Directory *dir);
 int file_stat(Directory *d, const char *name, struct stat *s);
 
-
+static inline Entry *dir_entry(Directory *d, int i) { return &d->array[i]; }
 static inline const struct stat *entry_stat(const Entry *e) {
         assert(e);
         if (e->state==ENTRY_FAILED) return NULL;
@@ -199,6 +204,6 @@ static inline const struct stat *entry_stat(const Entry *e) {
 static inline const struct stat *dir_stat(const Directory *d) { 
         return entry_stat(d->parent_entry);
 }
-static inline int entry_isdir(const Directory *d, int i) {
-        return S_ISDIR(entry_stat(&d->array[i])->st_mode);
+static inline int entry_isdir(Directory *d, int i) {
+        return dir_entry(d,i)->state==ENTRY_DIR || S_ISDIR(entry_stat(&d->array[i])->st_mode);
 }

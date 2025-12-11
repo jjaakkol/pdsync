@@ -305,25 +305,39 @@ static int entrycmp(const void *x, const void *y) {
         return strcmp((*a)->name, (*b)->name);
 }
 
-/* Directory read is split in two Jobs
+
+static pthread_mutex_t readdir_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Directory read is split in two parts
  * - read_directory reads the directory entries and is fast
  * - Doesn't stat the entries, because stats are slow and we wan't stats of job size quickly
  */
-int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d, const char *name, off_t depth)
-{
+Directory *read_directory(Directory *parent, Entry *parent_entry) {
         int allocated = 1024;
         int dfd = -1;
         DIR *d = NULL;
         int entries = 0;
         Dent *dents = NULL;
         Directory *nd=NULL;
+        const char *name=parent_entry->name;
 
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
         assert(!parent || parent->ref>0);
 
-        set_thread_status(file_path(parent,name),"readdir");
+        set_thread_status(file_path(parent, name),"dir mutex");
+        pthread_mutex_lock(&readdir_mutex);
+        pthread_mutex_lock(&lru_mut);
+        if (parent_entry->state>ENTRY_INIT) {
+                atomic_fetch_add(&scans.read_directory_hits, 1);
+                pthread_mutex_unlock(&lru_mut);
+                pthread_mutex_unlock(&readdir_mutex);
+                return parent_entry->dir;
+        }
+        parent_entry->state=ENTRY_READ_RUNNING;
+        pthread_mutex_unlock(&lru_mut);
 
+        set_thread_status(file_path(parent, name),"readdir");
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL)
         {
                 parent_entry->state=ENTRY_FAILED;
@@ -378,6 +392,10 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         // Init the entry array for Directories
         for (int i = 0; i < entries; i++) {
                 nd->array[i].name=dents[i].name;
+                if (dents[i].d_type == DT_DIR) {
+                        // FIXME: remove this
+                        init_entry(&nd->array[i], dfd, nd->array[i].name);
+                }
         }
         free(dents);
         closedir(d);
@@ -396,8 +414,9 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         scans.entries_active += entries;
         atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
-
-        return RET_OK;
+        parent_entry->state=ENTRY_READ_READY;
+        pthread_mutex_unlock(&readdir_mutex);
+        return nd;
 
         fail:
         if (dfd>=0) close(dfd);
@@ -406,11 +425,11 @@ int read_directory(Directory *parent, Entry *parent_entry, Directory *not_used_d
         parent_entry->state=ENTRY_FAILED;
         parent_entry->dir=NULL;
         free(nd);
-        return RET_FAILED;
+        pthread_mutex_unlock(&readdir_mutex);
+        return NULL;
 }
 
-// FIXME: scan_directory needs to be split to smaller jobs
-// Could be done while splitting dsync()
+// FIXME: scan_directory should to be split to smaller jobs or use io_uring
 Directory *scan_directory(Directory *parent, Entry *entry)
 {
         assert(!parent || parent->magick != 0xDADDEAD);
@@ -423,7 +442,7 @@ Directory *scan_directory(Directory *parent, Entry *entry)
         }
 
         //printf("scan directory %s\n", file_path(parent, entry->name)); 
-        read_directory(parent, entry, NULL, entry->name, 0);
+        read_directory(parent, entry);
         if (entry->state==ENTRY_FAILED) return NULL;
 
         Directory *nd=entry->dir;
@@ -441,10 +460,38 @@ Directory *scan_directory(Directory *parent, Entry *entry)
                 Entry *e = &nd->array[i];
                 if (e->state==ENTRY_CREATED) init_entry(e, nd->fd, e->name);
         }
-
         set_thread_status(file_path(parent, entry->name), "scandir done");
         dir_close(nd);
         entry->state=ENTRY_SCAN_READY;
         assert(nd->ref>0);
         return nd;
 }
+
+// Job to pre-read Directories
+// This is very racy: other threads might free the directory while we are still trying to read it
+JobResult directory_reader(Directory *from, Entry *parent, Directory *ignored, const char *ignored2, off_t depth) {
+        DEBUG("directory_reader depth %ld\n", depth);
+        for(int i=0; i<from->entries; i++) {
+                if (from->array[i].state==ENTRY_INIT && entry_isdir(from, i) && !dir_entry(from,i)->dir ) {
+                        read_directory(from, dir_entry(from, i));
+                }
+        }
+        // FIXME: race with from(from,i)->dir
+        for(int i=0; i<from->entries; i++) {
+                if (dir_entry(from,i)->dir) {
+                        //submit_or_run_job(dir_entry(from,i)->dir, dir_entry(from,i), NULL, NULL, depth+1, directory_reader);
+                        directory_reader(dir_entry(from,i)->dir, dir_entry(from,i), NULL, NULL, depth+1);
+                }
+        }
+#if 0
+        for(int i=0; i<from->entries; i++) {
+                pthread_mutex_lock(&lru_mut);
+                if (dir_entry(from,i)->dir) d_freedir_locked(dir_entry(from,i)->dir);
+                pthread_mutex_unlock(&lru_mut);
+
+        }
+#endif
+        if (depth==0) fprintf(stderr,"directory_reader done %ld\n", depth);
+        return RET_OK;
+}
+

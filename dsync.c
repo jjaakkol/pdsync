@@ -400,11 +400,8 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
     }
-    if (scans->read_directory_jobs) {
-	printf("%8d read directory jobs queued\n",scans->read_directory_jobs);
-    }
-    if (scans->read_directory_miss) {
-	printf("%8d read directory misses\n",scans->read_directory_miss);
+    if (scans->read_directory_hits>=0) {
+	printf("%8d read directory hits\n",scans->read_directory_hits);
     }
 }
 
@@ -544,10 +541,9 @@ void print_progress() {
 }
 
 // Unlink one target entry, which is not a directory
-int unlink_entry(Directory *parent, Entry *tentry) {
+int unlink_file(Directory *parent, const char *name) {
         assert(delete);
         int ret=0;
-        const char *name=tentry->name;
 
         int dfd=dir_open(parent);
         if (!dryrun && unlinkat(dfd, name, 0)) {
@@ -558,8 +554,12 @@ int unlink_entry(Directory *parent, Entry *tentry) {
                 opers.entries_removed++;
         }
         dir_close(parent);
-        tentry->state=ENTRY_DELETED; // FIXME: this needs a lock
         return ret;
+}
+
+int unlink_entry(Directory *parent, Entry *e) {
+        assert(e && e->name);
+        return unlink_file(parent, e->name);
 }
 
 JobResult remove_directory(Directory *ignored, Entry *tentry, Directory *del, const char *not_used, off_t depth) {
@@ -612,7 +612,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
                 set_thread_status(file_path(to, del->array[i].name), "unlinking");
                 if (entry_isdir(del, i)) {
                         submit_job_first(NULL, &del->array[i], del, NULL, depth+1, remove_hierarchy);
-                } else if ( unlink_entry(del, &del->array[i]) ) {
+                } else if ( unlink_entry(del, dir_entry(del, i)) ) {
                         goto fail; 
                 }
 	}
@@ -1304,49 +1304,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         set_thread_status(file_path(to,target),"create");
 
         if (S_ISDIR(entry_stat(fentry)->st_mode)) {
-                struct stat target_stat;
-	        if (fstatat(tofd,target,&target_stat,AT_SYMLINK_NOFOLLOW)<0) {
-                        if  (errno==ENOENT ) {
-                                set_thread_status(file_path(to,target),"mkdir");
-	                        if (!dryrun && (mkdirat(tofd, target, 0777 )<0 || fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)<0) ) {
-                                        write_error("mkdir", to, target);
-                                        goto fail;
-	                        } else {
-                                        atomic_fetch_add(&opers.dirs_created, 1);
-                                        item("mkdir", to, target);
-                                }
-                        }
-                } else if (!dryrun && !S_ISDIR(target_stat.st_mode) ) {
-                        errno=ENOTDIR;
-                        write_error("Existing target is not a directory", to, target);
-                        goto fail;
-	        }
-	        if (safe_mode) {
-		        if (preserve_owner && fchown(tofd,0,0)<0) {
-                                write_error("fchown", to, target);
-                                goto fail;
-                        }
-		        if (fchmod(tofd,0700)<0) {
-                                write_error("chmod", to, target);
-                                goto fail;
-		        }
-	        }
-        	if (one_file_system && from->parent && entry_stat(fentry)->st_dev!=dir_stat(from->parent)->st_dev) {
-	                /* On different file system and one_file_system was given */
-                        skip_entry(to,fentry);
-                } else if (entry_stat(fentry)->st_ino == target_root.stat.st_ino && entry_stat(fentry)->st_dev == target_root.stat.st_dev ) {
-	                /* Attempt to recurse into target directory */
-                        show_warning("skipping target directory", file_path(to, target));
-	                skip_entry(to, fentry);
-                } else if ( target_stat.st_ino == source_stat.st_ino && target_stat.st_dev == source_stat.st_dev ) {
-	                /* Attempt to recurse into source directory */
-                        show_warning("skipping source directory", file_path(to,target));
-                        skip_entry(from, fentry);
-                } else if (recursive) {
-	                // Submit a job to sync the subdirectory, depth first
-                        submit_job_first(from, fentry, to, target, 0, sync_directory);
-                        goto out;
-	        }
+                goto out;
     
         } else if (S_ISLNK(entry_stat(fentry)->st_mode)) {
         	if (!preserve_links) goto out;
@@ -1401,11 +1359,11 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 
 JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset);
 
-JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset) {
-        Directory *from=NULL;
+JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t depth) {
         Directory *to=NULL;
-
         assert(parent_fentry);
+
+        set_thread_status(file_path(to_parent, target), "sync checks");
 
         // Check if we have already tagged the target directory and can just skip everything
         if (sync_tag) {
@@ -1423,16 +1381,57 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 close(fd);
         }
 
-        from=scan_directory(from_parent, parent_fentry);
-        if (from==NULL) {
-                read_error("scan_directory", from_parent, parent_fentry->name);
-                item("# Skipped because directory read failed", from_parent, parent_fentry->name);
-	        opers.read_errors++;
-	        goto fail;
+        Directory *from=read_directory(from_parent, parent_fentry);
+        if (!from) {
+                item2("# skipping non readable diretory", from_parent, parent_fentry->name);
+                atomic_fetch_add(&opers.read_errors, 1);
+                return RET_FAILED;
+        }
+
+        // Create new target directory if it does not exist.
+        int tofd=-1;
+        if (to_parent) {
+                struct stat target_stat;
+                tofd=dir_open(to_parent);
+                if (tofd<0) {
+                        write_error("Can't open parent directory", to_parent, ".");
+                        goto fail;
+                }
+                target_stat.st_mode=0;
+                if (fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)==0) {
+                        if ( target_stat.st_ino == source_stat.st_ino && target_stat.st_dev == source_stat.st_dev ) {
+                                /* Attempt to recurse into source directory */
+                                show_warning("skipping source directory", file_path(to_parent, target));
+                                skip_entry(from_parent, parent_fentry);
+                        }
+
+                        if (!S_ISDIR(target_stat.st_mode) ) {
+                                // Target exists and is not a directory
+                                if (delete) {
+                                        unlink_file(to_parent, target);
+                                } else {
+                                        errno=ENOTDIR;
+                                        write_error("Existing target is not a directory and --delete is not in use:", to, target);
+                                        dir_close(to_parent);
+                                        goto fail;
+                                }
+                        }
+                }
+                if (errno==ENOENT || (!S_ISDIR(target_stat.st_mode)) ) {
+                        if (!dryrun && (mkdirat(tofd, target, 0777 )<0) ) {
+                                write_error("mkdir", to, target);
+                                goto fail;
+                        } else {
+                                atomic_fetch_add(&opers.dirs_created, 1);
+                                item("mkdir", to, target);
+                        }
+                }
+
+                if (tofd>0) dir_close(to_parent);
         }
 
         // We always have a parent_fentry, since that is where we are copying files from,
-        // but the directory we are copying to might just be created.
+        // but the directory we are copying to might just be created or in case of --dry-run not exist
         // FIXME this is a memory leak
         Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
         if (parent_tentry==NULL) {
@@ -1440,22 +1439,70 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 init_entry(parent_tentry, dir_open(to_parent), my_strdup(target));
                 dir_close(to_parent);
         }
+        to=read_directory(to_parent, parent_tentry);
+
+        // We are ready to submit more sync_directory jobs
+        if (recursive) {
+                set_thread_status("submitting jobs", dir_path(to));
+
+                for(int i=0; i<from->entries; i++) {
+                        if (entry_isdir(from ,i)) {
+                                Entry *fentry=dir_entry(from,i);
+                                const char *target=fentry->name;
+
+                                // Should the target dir be excluded
+                                if (should_exclude(from, fentry)) {
+                                        skip_entry(to,fentry);
+                                        continue;
+                                }
+
+                                if (one_file_system && from->parent && entry_stat(fentry)->st_dev!=dir_stat(from->parent)->st_dev) {
+	                                // On different file system and --one_file_system was given
+                                        skip_entry(to,fentry);
+                                        continue;
+                                }
+
+                                if (entry_stat(fentry)->st_ino == target_root.stat.st_ino &&  entry_stat(fentry)->st_dev == target_root.stat.st_dev ) {
+	                                // Attempt to recurse into target directory
+                                        show_warning("skipping target directory", file_path(to, target));
+	                                skip_entry(to, fentry);
+                                        continue;
+                                }
+
+                                // Now we are allowed to submit the depth+1 job
+                                submit_job_first(from, fentry, to, target, depth+1, sync_directory);
+                        }
+                }
+        }
+
+        from=scan_directory(from_parent, parent_fentry);
+        if (from==NULL) {
+                read_error("scan_directory", from_parent, parent_fentry->name);
+                item("# directory scan failed", from_parent, parent_fentry->name);
+	        opers.read_errors++;
+	        goto fail;
+        }
+
         to=scan_directory(to_parent, parent_tentry);
         if (to==NULL) {
-                item("ERROR", to_parent, target);
+                read_error("scan_directory", to_parent, parent_tentry->name);
+                item("# directory scan failed", to_parent, target);
                 goto fail;
         }
 
         // We can start syncing files in another thread while we are removing them here
-        submit_job(from, parent_fentry, to, target, 0 , sync_files);
-    
+        submit_job(from, parent_fentry, to, target, 0, sync_files);
+
         // If --delete clear out target directory of files which do not exist in from
-        for(int to_i=0; delete && to && to_i < to->entries; to_i++) {
-	        if ( directory_lookup(from,to->array[to_i].name)==NULL) {
-                        if (entry_isdir(to, to_i)) {
-                                submit_job_first(NULL, &to->array[to_i], to, NULL, offset+1, remove_hierarchy);
-                        } else {
-	                        unlink_entry(to, &to->array[to_i]);
+        if (delete) {
+                set_thread_status(file_path(to_parent, target), "deleting files");
+                for(int to_i=0; to && to_i < to->entries; to_i++) {
+	                if ( directory_lookup(from,to->array[to_i].name)==NULL) {
+                                if (entry_isdir(to, to_i)) {
+                                        submit_job_first(NULL, &to->array[to_i], to, NULL, depth+1, remove_hierarchy);
+                                } else {
+	                                unlink_entry(to, dir_entry(to, to_i));
+                                }
                         }
                 }
 	}
