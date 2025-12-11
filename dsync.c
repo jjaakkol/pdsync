@@ -1466,7 +1466,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
 
         // We are ready to submit more sync_directory jobs
         if (recursive) {
-                set_thread_status("submitting jobs", dir_path(to));
+                set_thread_status(dir_path(to), "submitting jobs");
 
                 for(int i=0; i<from->entries; i++) {
                         if (entry_isdir(from ,i)) {
