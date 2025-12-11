@@ -523,6 +523,7 @@ void print_progress() {
         const char *less_or_equal = (scans.read_directory_jobs>0) ? "<" : "=";
         float percent=100;
         if (files_total>0) percent=(100.0*files_synced)/files_total;
+        if (progress==1) fprintf(tty_stream,"\033[1A\033[K");
         fprintf(tty_stream, "# PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
         fprintf(tty_stream,"%d/%d files %s%2.1f%% |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle | %s\n",
                 files_synced,
