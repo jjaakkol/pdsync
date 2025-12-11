@@ -14,17 +14,17 @@ runtest() {
 }
 
 echo "# pdsync sync test"
-runtest 1 ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# pdsync verify test. No output."
-runtest 0 ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+runtest 0 ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# rsync verify test. No output."
 runtest 0 rsync --archive --hard-links --sparse -i --delete dsync-test/. dsync-target/.
 echo "# pdsync --reflink test"
 mkdir -vp dsync-target/reflink
-runtest 1 ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-target dsync-target/reflink
+runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-target dsync-target/reflink
 echo "# pdsync delete test"
-runtest 1 ./pdsync --stats  --threads=32 --archive --delete dsync-test/emptydir dsync-target
-echo "# rsync sync test. No output."
-runtest 0 rsync --archive --delete dsync-test/. dsync-target/.
+runtest 1 ./pdsync -P --stats  --threads=32 --archive --delete dsync-test/emptydir dsync-target
+echo "# rsync sync time test. No output."
+runtest 0 rsync --archive --hard-links --delete dsync-test/. dsync-target/.
 echo "# rsync delete test. No output."
 runtest 0 rsync --archive --delete dsync-test/emptydir/. dsync-target/.
