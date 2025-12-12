@@ -257,7 +257,7 @@ Job *submit_job_real(Directory *from, Entry *fentry, Directory *to, const char *
 
 // Optiomization: if queuess are full skip job submission and run it directly
 void submit_or_run_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
-        if (scans.jobs_waiting < threads * 4) {
+        if (scans.queued < threads * 4) {
                 submit_job(from, fentry, to, target, offset, callback);
                 return;
         }
