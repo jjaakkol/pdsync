@@ -297,7 +297,26 @@ void d_freedir(Directory *dir)
         pthread_mutex_lock(&lru_mut);
         d_freedir_locked(dir);
         pthread_mutex_unlock(&lru_mut);
-}       
+}
+
+Entry *directory_lookup(const Directory *d, const char *name) {
+        assert(d && name && d->sorted);
+
+        int left = 0;
+        int right = d->entries - 1;
+        while (left <= right) {
+                int mid = left + (right - left) / 2;
+                int cmp = strcmp(d->sorted[mid]->name, name);
+                if (cmp == 0) {
+                        return d->sorted[mid];
+                } else if (cmp < 0) {
+                        left = mid + 1;
+                } else {
+                        right = mid - 1;
+                }
+        }
+        return NULL;
+}
 
 static int entrycmp(const void *x, const void *y) {
         Entry **a = (Entry **)x;

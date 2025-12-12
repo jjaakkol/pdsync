@@ -181,23 +181,6 @@ JobResult run_any_job()
         return RET_NONE;
 }
 
-Entry *directory_lookup(const Directory *d, const char *name) {
-    int s=0;
-    int e=d->entries;
-    int cmp=-1;
-    while(s<d->entries && s<e && 
-	  (cmp=strcmp(d->sorted[(s+e)/2]->name,name))!=0) {
-	if (cmp<0) {
-	    s=(s+e)/2+1;
-	} else {
-	    e=(s+e)/2;
-	}
-	/* assert(s<d->entries && e<=d->entries); */
-    }
-    if (cmp==0) return d->sorted[(s+e)/2];
-    return NULL;    
-}
-
 /* Threads wait in this loop for jobs to run */
 void *job_queue_loop(void *arg)
 {
