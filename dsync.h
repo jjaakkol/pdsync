@@ -32,11 +32,12 @@ typedef enum
         ENTRY_CREATED,
         ENTRY_DIR,
         ENTRY_INIT,
-        ENTRY_READ_RUNNING,
-        ENTRY_READ_READY,
-        ENTRY_SCAN_RUNNING,
-        ENTRY_SCAN_READY,
+//        ENTRY_READ_RUNNING,
+//        ENTRY_READ_READY,
+//        ENTRY_SCAN_RUNNING,
+//        ENTRY_SCAN_READY,
         ENTRY_DELETED,
+        ENTRY_FREED,
         ENTRY_FAILED // IO Error or another error
 } EntryState;
 
@@ -84,9 +85,7 @@ typedef struct
         atomic_int files_synced;
         atomic_int hard_links_saved;
 
-        atomic_int read_directory_jobs; // Jobs reading a Directory. If all dirs have been read if this is 0
-        atomic int scan_directory_jobs; // Jobs scanning a Directory.
-        atomic int sync_files_jobs;     // Jobs syncing files
+        atomic_int read_directory_jobs; // Jobs reading a Directory. If all dirs have been read this is 0
         int maxjobs;
         int queued;
         int jobs_waiting;      // Jobs waiting for other jobs to finish
@@ -213,19 +212,33 @@ int dir_openat(Directory *d, const char *f);
 void dir_claim(Directory *dir);
 int file_stat(Directory *d, const char *name, struct stat *s);
 
-static inline Entry *dir_entry(Directory *d, int i) { return &d->array[i]; }
+static inline Entry *dir_entry(Directory *d, int i) {
+        Entry *e=&d->array[i];
+        return e;
+}
+
 static inline const struct stat *entry_stat(const Entry *e)
 {
         assert(e);
-        if (e->state == ENTRY_FAILED)
-                return NULL;
+        assert(e->state != ENTRY_CREATED && e->state != ENTRY_FAILED);
         return &e->_stat;
 }
 static inline const struct stat *dir_stat(const Directory *d)
 {
         return entry_stat(d->parent_entry);
 }
-static inline int entry_isdir(Directory *d, int i)
+static inline int entry_isdir(Entry *e)
 {
-        return dir_entry(d, i)->state == ENTRY_DIR || S_ISDIR(entry_stat(&d->array[i])->st_mode);
+        assert(e);
+        switch(e->state) {
+        case ENTRY_DIR: return 1;
+        case ENTRY_CREATED: return 0;
+        case ENTRY_FAILED: return 0;
+        default: break;
+        }
+        return S_ISDIR(entry_stat(e)->st_mode);
+}
+static inline int entry_isdir_i(Directory *d, int i)
+{
+        return entry_isdir(&d->array[i]);
 }
