@@ -52,7 +52,7 @@ int threads=4;
 int debug=0;
 const char *sync_tag=NULL;
 const char *sync_tag_name="user.pdsync";
-const size_t copy_job_size = 16 * 1024 * 1024; // Default copy_job_size: FIXME: make adjustable
+size_t copy_job_size = 1 * 1024 * 1024; // Default copy_job_size 1MB
 
 // FIXME: get rid of globals
 uid_t myuid=0;
@@ -117,6 +117,7 @@ static Link **link_htable=NULL;
 static int hash_size=1009;
 static pthread_mutex_t link_htable_mutex=PTHREAD_MUTEX_INITIALIZER;
 
+// -- options
 enum {
         ATIME_PRESERVE=255,
         PRIVACY=256,
@@ -124,14 +125,15 @@ enum {
         THREADS=258,
         SYNC_TAG=259,
         SYNC_TAG_NAME=260,
-	DEBUG=261,
+        DEBUG=261,
         CHECK=262,
         STATS=263,
-        REFLINK=264
+        REFLINK=264,
+        COPY_JOB_SIZE=265
 };
 
-
 static struct option options[]= {
+                { "copy-job-size",   1, NULL, COPY_JOB_SIZE },
         { "dry-run",         0, NULL, 'n' },
         { "itemize",         0, NULL, 'i' },
         { "progress",        0, NULL, 'P' },
@@ -182,18 +184,19 @@ static void show_help() {
     printf("Usage: pdsync [options] <fromdir> <todir>\n");
     printf("pdsync is a tool for synchronization of two local directories.\n");
     printf("Options are:\n");
-    for(i=0;options[i].name;i++) {
-	while((len>0 && len<26) || (len>26 && len<52)) {
-	    putchar(' '); len++;
-	}
-	if (len>52) { putchar('\n'); len=0; }
-	if (options[i].val<255) {
-	    len+=printf(" -%c --%s",options[i].val, options[i].name);
-	} else {
-	    len+=printf("    --%s",options[i].name);
-	}
-    }    
-    putchar('\n');
+        for(i=0;options[i].name;i++) {
+                while((len>0 && len<26) || (len>26 && len<52)) {
+                        putchar(' '); len++;
+                }
+                if (len>52) { putchar('\n'); len=0; }
+                if (options[i].val<255) {
+                        len+=printf(" -%c --%s",options[i].val, options[i].name);
+                } else {
+                        len+=printf("    --%s",options[i].name);
+                }
+        }
+        printf("\n    --copy-job-size <MB>   Set the copy job size in megabytes (default: 1)\n");
+        putchar('\n');
 }
 
 void show_error(const char *why, const char *file) {
@@ -320,6 +323,16 @@ static int parse_options(int argc, char *argv[]) {
 	case CHECK: check=1; break;
         case REFLINK: reflink=1; break;
         case STATS: stats++; break;
+        case COPY_JOB_SIZE:
+                        char *endptr = NULL;
+                        long mb = 0;
+                        if (optarg && (mb=strtol(optarg, &endptr, 10))>0 && endptr && *endptr == '\0' && mb<128) {
+                                copy_job_size = (size_t)mb * 1024 * 1024;
+                        } else {
+                                fprintf(stderr, "Invalid value for --copy-job-size: %s\n", (optarg) ? optarg : "''");
+                                exit(1);
+                        }
+                        break;
 	case 'a':
 	    recursive=1;
 	    preserve_permissions=1;
