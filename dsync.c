@@ -591,10 +591,10 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         Directory *del=NULL;
         int i;
  
-        // TODO: we don't need scan directory, we just need to know which entries are files and which are directories
-        del=scan_directory(to, tentry);
+        // We only read_directory. fstat of the removed inodes is not necessary
+        del=read_directory(to, tentry);
         if (!del) {
-                write_error("scan_directory", to, tentry->name);
+                write_error("read_directory", to, tentry->name);
                 goto fail;
         }
         int dfd=dir_open(del);
@@ -616,7 +616,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
   
         for(i=0;i<del->entries;i++) {
                 set_thread_status(file_path(to, del->array[i].name), "unlinking");
-                if (entry_isdir(del, i)) {
+                if (entry_isdir_i(del, i)) {
                         submit_job_first(NULL, &del->array[i], del, NULL, depth+1, remove_hierarchy);
                 } else if ( unlink_entry(del, dir_entry(del, i)) ) {
                         goto fail; 
@@ -813,6 +813,10 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         const char *source=fentry->name;
         assert(source && target);
 
+        if (fentry->state==ENTRY_FAILED) {
+                return RET_FAILED;
+        }
+
         if (dryrun) {
                 item("CP",to,target);
                 opers.bytes_copied+=entry_stat(fentry)->st_size;
@@ -932,7 +936,8 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                 set_thread_status(file_path(to,target),buf);
         } else set_thread_status(file_path(to,target),"copy submitted");
         return ret;
- fail:
+
+        fail:
         item("# cp failed", to, target);
         fentry->state=ENTRY_FAILED;
         ret = RET_FAILED;
@@ -1063,9 +1068,8 @@ int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry
  * than to entry
  */
 int entry_changed(Entry *from, Entry *to) {
-        if (entry_stat(from) == NULL || entry_stat(to) == NULL) {
-                // If stat info is missing because of some error, we update the Entry anyway
-                return 0;
+        if (from->state==ENTRY_FAILED || to->state==ENTRY_FAILED) {
+                return 0; // Nothing we can do here anymore
         }
 
         if (update_all) {
@@ -1331,13 +1335,14 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 
         } else if (S_ISFIFO(entry_stat(fentry)->st_mode)) {
 	        if (!preserve_devices) return 0;
-	        item("FI",to,target);
-                // Attempt to create FIFO with the same permission bits as source (mask out file type bits)
                 if (!dryrun && mkfifoat(tofd, target,
-                        entry_stat(fentry)->st_mode & 0777 )<0) {
+                        entry_stat(fentry)->st_mode & 0777)<0) {
                         write_error("mkfifo", to, target);
                         goto fail;
-	        }
+	        } else  {
+                        atomic_fetch_add(&opers.fifos_created, 1);
+                        item("mkfifo" ,to,target);
+                }
 
         // Don't bother with device special files 
         } else if (S_ISCHR(entry_stat(fentry)->st_mode) || S_ISBLK(entry_stat(fentry)->st_mode)) {
@@ -1371,7 +1376,7 @@ JobResult sync_remove(Directory *from, Entry *parent_fentry, Directory *to, cons
                 set_thread_status(dir_path(from), "deleting files");
                 for(int to_i=0; to && to_i < to->entries; to_i++) {
 	                if ( directory_lookup(from,to->array[to_i].name)==NULL) {
-                                if (entry_isdir(to, to_i)) {
+                                if (entry_isdir_i(to, to_i)) {
                                         submit_job_first(NULL, &to->array[to_i], to, NULL, depth+1, remove_hierarchy);
                                 } else {
 	                                unlink_entry(to, dir_entry(to, to_i));
@@ -1463,25 +1468,31 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 dir_close(to_parent);
         }
         to=read_directory(to_parent, parent_tentry);
+        if (!to) {
+                read_error("read_directory", to_parent, parent_tentry->name);
+                item("# directory read failed", to_parent, target);
+                goto fail;
+        }
+        assert(parent_tentry->dir);
 
         // We are ready to submit more sync_directory jobs
         if (recursive) {
                 set_thread_status(dir_path(to), "submitting jobs");
 
                 for(int i=0; i<from->entries; i++) {
-                        if (entry_isdir(from ,i)) {
+                        if (entry_isdir_i(from ,i)) {
                                 Entry *fentry=dir_entry(from,i);
                                 const char *target=fentry->name;
 
                                 // Should the target dir be excluded
                                 if (should_exclude(from, fentry)) {
-                                        skip_entry(to,fentry);
+                                        skip_entry(to, fentry);
                                         continue;
                                 }
 
                                 if (one_file_system && from->parent && entry_stat(fentry)->st_dev!=dir_stat(from->parent)->st_dev) {
 	                                // On different file system and --one_file_system was given
-                                        skip_entry(to,fentry);
+                                        skip_entry(to, fentry);
                                         continue;
                                 }
 
@@ -1502,7 +1513,6 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         // Read directory part had ended.
         atomic_fetch_add(&scans.read_directory_jobs, -1);
 
-
         from=scan_directory(from_parent, parent_fentry);
         if (from==NULL) {
                 read_error("scan_directory", from_parent, parent_fentry->name);
@@ -1511,6 +1521,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
 	        goto fail;
         }
 
+        assert(parent_tentry->dir);
         to=scan_directory(to_parent, parent_tentry);
         if (to==NULL) {
                 read_error("scan_directory", to_parent, parent_tentry->name);
@@ -1539,6 +1550,12 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
         for(int i=0; i<from->entries; i++) {
 	        Entry *fentry=&from->array[i];
 	        Entry *tentry=NULL;
+
+                if (fentry->state == ENTRY_FAILED) {
+                        item("# Read error, skipping\n", from, fentry->name);
+                        atomic_fetch_add(&opers.read_errors, 1);
+                        continue;
+                }
 	    
 	        /* Check if this entry should be excluded */
 	        if (should_exclude(from,fentry)) {
@@ -1684,6 +1701,7 @@ int main(int argc, char *argv[]) {
                exit(1);
         }
 
+        memset(&source_root, 0, sizeof(source_root));
         init_entry(&source_root, sfd, s_frompath);
 
         // start the threads, job queue and wait the submitted job to finish
