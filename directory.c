@@ -86,7 +86,6 @@ int file_stat(Directory *d, const char *name, struct stat *s) {
 /* Initialize a Entry when given a fd of open directory */
 Entry *init_entry(Entry *entry, int dfd, char *name)
 {
-        assert(entry->state != ENTRY_INIT);
         entry->name = name;
 
         if (fstatat(dfd, name, &entry->_stat, AT_SYMLINK_NOFOLLOW) < 0)
@@ -243,14 +242,14 @@ static int dir_open_locked(Directory *d)
                 struct rlimit rl;
                 if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
                         // Every thread requires at least 2 fd's when copying files
-                        max_open_dirs = rl.rlim_cur - 2*threads - 16;
+                        max_open_dirs = rl.rlim_cur - 4*threads - 16;
                 } else {
                         // How can this fail?
                         fprintf(stderr, "getrlimit(RLIMIT_NOFILE) failed: %s", strerror(errno));
                         exit(1);
                 }
                 if (max_open_dirs<threads*2+16) {
-                        fprintf(stderr,"Warning: RLIMIT_NOFILE too low (%ld). Use ulimit -n to increase. Exiting.\n", rl.rlim_cur);
+                        fprintf(stderr,"Error: Max nummber of open files RLIMIT_NOFILE too low (%ld). Use ulimit -n to increase. Exiting.\n", rl.rlim_cur);
                         exit(1);
                 }
                 fprintf(stderr, "Using max_open_dirs=%d\n", max_open_dirs);
@@ -378,18 +377,21 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         assert(!parent || parent->magick == 0xDADDAD);
         assert(!parent || parent->ref>0);
 
-        if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL)
+        // Open the directory and save its fstat() while we have the chance
+        if ((dfd = dir_openat(parent, name)) < 0 ||
+                (d = fdopendir(dfd)) == NULL ||
+                fstat(dfd, &parent_entry->_stat) < 0)
         {
                 parent_entry->state=ENTRY_FAILED;
                 show_error_dir("open directory", parent, name);
                 goto fail;
         }
+        parent_entry->state=ENTRY_INIT;
 
         /* Read the directory and save the names and dents */
         dents = my_calloc(allocated, sizeof(*dents));
         errno = 0;
-        struct dirent *dent;
-        while ((dent = readdir(d)))
+        for (struct dirent *dent=NULL; (dent = readdir(d)) != NULL;)
         {
                 if (dent->d_name[0] == '.')
                 {
@@ -487,7 +489,7 @@ Directory *scan_directory(Directory *parent, Entry *parent_entry)
         // Initialize with fstatat() all the entries which have not been stated, in readdir() order
         for (int i = 0; i < nd->entries; i++) {
                 Entry *e = &nd->array[i];
-                init_entry(e, nd->fd, e->name);
+                if (e->state<=ENTRY_INIT) init_entry(e, nd->fd, e->name);
         }
         set_thread_status(file_path(parent, parent_entry->name), "scandir done");
         dir_close(nd);
