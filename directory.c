@@ -1,9 +1,10 @@
 #include "dsync.h"
+#include <sys/resource.h>
 
 // This file contains Entry and Directory handling
 
 // LRU cache for open directory file handles
-#define MAX_OPEN_DIRS 1000
+static int max_open_dirs=0;  // initialize this when first used
 
 static Directory *lru_head = NULL;
 static Directory *lru_tail = NULL;
@@ -24,7 +25,7 @@ static pthread_mutex_t lru_mut = PTHREAD_MUTEX_INITIALIZER;
 
 // Add directory to LRU head
 static void lru_add(Directory *d) {
-    assert(d->fd>0);
+    assert(d->fd>=0);
     atomic_fetch_add(&scans.open_dir_count, 1);
     d->lru_prev = NULL;
     d->lru_next = lru_head;
@@ -73,7 +74,7 @@ static void lru_close_one() {
         //printf("lru_close_one: tried %d, open %d\n",tried, open_dir_count);
 }
 
-// Helper function to fstatat a file
+// Helper function to fstatat a file. FIXME: clean code by using this more
 int file_stat(Directory *d, const char *name, struct stat *s) {
         int dfd=dir_open(d);
         if (dfd<0) return -1;
@@ -85,7 +86,7 @@ int file_stat(Directory *d, const char *name, struct stat *s) {
 /* Initialize a Entry when given a fd of open directory */
 Entry *init_entry(Entry *entry, int dfd, char *name)
 {
-        memset(entry, 0, sizeof(*entry));
+        assert(entry->state != ENTRY_INIT);
         entry->name = name;
 
         if (fstatat(dfd, name, &entry->_stat, AT_SYMLINK_NOFOLLOW) < 0)
@@ -154,12 +155,13 @@ const char *file_path(const Directory *d, const char *f)
         return buf;
 }
 
-// Free a directory structure if it refcount is zero. Dire mutex must be held.
-static void d_freedir_locked(Directory *dir)
+// Free a directory structure if refcount goes zero. Directory mutex must be held.
+static void dir_freedir_locked(Directory *dir)
 {
         assert(dir->magick == 0xDADDAD);
         assert(dir->ref>=0);
-        assert(dir->parent_entry && dir->parent_entry->dir==dir);
+        assert(dir->parent_entry);
+        assert(!dir->parent_entry->dir || dir->parent_entry->dir==dir);
 
         atomic_fetch_add(&dir->ref, -1);
         DEBUG("refcount %s %d\n", dir_path(dir), dir->ref);
@@ -193,8 +195,9 @@ static void d_freedir_locked(Directory *dir)
         free(dir->name);
         dir->entries = -123; /* Magic value to debug a race */
         dir->parent_entry->dir=NULL;
+        dir->parent_entry->state=ENTRY_FREED;
         if (dir->parent)
-                d_freedir_locked(dir->parent);
+                dir_freedir_locked(dir->parent);
         free(dir);
 }
 
@@ -202,7 +205,7 @@ static int dir_close_locked(Directory *d) {
         assert(d->magick==0xDADDAD);
         assert(d->ref>0 && d->fdrefs>0);
         atomic_fetch_add(&d->fdrefs, -1);
-        if (d->fdrefs==0) d_freedir_locked(d);
+        if (d->fdrefs==0) dir_freedir_locked(d);
         return 0;
 }
 
@@ -218,9 +221,10 @@ static int dir_openat_locked(Directory *parent, const char *name)
                 dfd = openat(pfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW); // Try again without O_NOATIME
         if (dfd < 0) {
                 if (errno==EMFILE) {
-                        show_error_dir("dir_openat probably a fd leak BUG", parent, name);
+                        show_error_dir("dir_openat: probably a fd leak BUG", parent, name);
                         abort();
                 }
+
                 show_error_dir("dir_openat", parent, name);
         }
         if (parent && pfd>=0) dir_close_locked(parent);
@@ -234,28 +238,60 @@ static int dir_open_locked(Directory *d)
         assert(d->magick==0xDADDAD);
         assert(d->ref>0);
 
-        if (d->fdrefs==0) atomic_fetch_add(&d->ref,1);
-        atomic_fetch_add(&d->fdrefs, 1);
+
+        // init max_open_dirs if not init yet
+        if (max_open_dirs==0) {
+                struct rlimit rl;
+                if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+                        // Every thread requires at least 2 fd's when copying files
+                        max_open_dirs = rl.rlim_cur - 2*threads - 16;
+                } else {
+                        // How can this fail?
+                        fprintf(stderr, "getrlimit(RLIMIT_NOFILE) failed: %s", strerror(errno));
+                        exit(1);
+                }
+                if (max_open_dirs<threads*2+16) {
+                        fprintf(stderr,"Warning: RLIMIT_NOFILE too low (%ld). Use ulimit -n to increase. Exiting.\n", rl.rlim_cur);
+                        exit(1);
+                }
+                fprintf(stderr, "Using max_open_dirs=%d\n", max_open_dirs);
+        }
+
+        // Open the directory if not already open
         if (d->fd < 0)
         {
                 // If too many open, close LRU
-                while (atomic_load(&scans.open_dir_count) >= MAX_OPEN_DIRS) {
+                while (atomic_load(&scans.open_dir_count) >= max_open_dirs) {
                         lru_close_one();
                 }
                 int fd = dir_openat_locked(d->parent, d->name);
+                if (fd<0) {
+                        show_error_dir("open() directory", d, ".");
+                        return -1;
+                }
                 struct stat s;
-                if (fd < 0 || fstat(fd, &s) < 0 ||
-                        s.st_ino != dir_stat(d)->st_ino ||
-                        s.st_dev != dir_stat(d)->st_dev)
-                {
-                        show_error_dir("Directory changed or unavailable", d, d->name);
+                if (fstat(fd, &s) < 0 ) {
+                        show_error_dir("fstat() direcotry", d, ".");
+                        close(fd);
+                        return -1;
+                }
+                if (dir_stat(d)->st_ino==0 && dir_stat(d)->st_dev==0) {
+                        // First time open, save stat info
+                        d->parent_entry->_stat=s;
+                } else if (dir_stat(d)->st_ino != s.st_ino || dir_stat(d)->st_dev != s.st_dev) {
+                        // Directory has changed under us!
+                        show_error_dir("Directory inode or dev changed", d, ".");
+                        close(fd);
                         return -1;
                 }
                 d->fd = fd;
                 lru_add(d);
         } else {
+                // Move to LRU head since dir was use
                 lru_move_to_head(d);
         }
+        if (d->fdrefs==0) atomic_fetch_add(&d->ref,1);
+        atomic_fetch_add(&d->fdrefs, 1);
         return d->fd;
 }
 
@@ -271,7 +307,7 @@ int dir_open(Directory *d)
 
 int dir_close(Directory *d) {
         if (d==NULL) return 0;
-        pthread_mutex_lock(&lru_mut); 
+        pthread_mutex_lock(&lru_mut);
         dir_close_locked(d);
         pthread_mutex_unlock(&lru_mut);
         return 0;
@@ -295,7 +331,7 @@ void dir_claim(Directory *d) {
 void d_freedir(Directory *dir)
 {
         pthread_mutex_lock(&lru_mut);
-        d_freedir_locked(dir);
+        dir_freedir_locked(dir);
         pthread_mutex_unlock(&lru_mut);
 }
 
@@ -337,14 +373,11 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         Directory *nd=NULL;
         const char *name=parent_entry->name;
 
-        set_thread_status(file_path(parent, name),"readdir");
+        set_thread_status(file_path(parent, name), "readdir");
 
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
         assert(!parent || parent->ref>0);
-
-        assert(parent_entry->state==ENTRY_CREATED || parent_entry->state==ENTRY_INIT);
-        parent_entry->state=ENTRY_READ_RUNNING;
 
         if ((dfd = dir_openat(parent, name)) < 0 || (d = fdopendir(dfd)) == NULL)
         {
@@ -401,8 +434,7 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         for (int i = 0; i < entries; i++) {
                 nd->array[i].name=dents[i].name;
                 if (dents[i].d_type == DT_DIR) {
-                        // FIXME: remove this
-                        init_entry(&nd->array[i], dfd, nd->array[i].name);
+                        nd->array[i].state = ENTRY_DIR;
                 }
         }
         free(dents);
@@ -422,7 +454,7 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         scans.entries_active += entries;
         atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
-        parent_entry->state=ENTRY_READ_READY;
+        assert(parent_entry->dir==nd);
         return nd;
 
         fail:
@@ -436,41 +468,30 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
 }
 
 // FIXME: scan_directory should to be split to smaller jobs or use io_uring
-Directory *scan_directory(Directory *parent, Entry *entry)
+Directory *scan_directory(Directory *parent, Entry *parent_entry)
 {
         assert(!parent || parent->magick != 0xDADDEAD);
         assert(!parent || parent->magick == 0xDADDAD);
 
-        if (entry->state==ENTRY_SCAN_READY) {
-                // Already scanned, but caller gets a new reference
-                atomic_fetch_add(&entry->dir->ref, 1);
-                return entry->dir;
-        }
+        //printf("scan directory %s\n", file_path(parent, entry->name));
+        if (parent_entry->state==ENTRY_FAILED) return NULL;
 
-        //printf("scan directory %s\n", file_path(parent, entry->name)); 
-        if (entry->state==ENTRY_FAILED) return NULL;
-        if (entry->state<ENTRY_READ_RUNNING) {
-                read_directory(parent, entry);
-        }
-
-        Directory *nd=entry->dir;
-        entry->state=ENTRY_SCAN_RUNNING;;
+        Directory *nd=parent_entry->dir;
         assert(nd);
-        set_thread_status(file_path(parent, entry->name), "scandir");
-
-        if (dir_open(nd) < 0) {
-                d_freedir(nd);
+        if (dir_open(nd)<0) {
+                show_error_dir("scan directory", parent, parent_entry->name);
                 return NULL;
         }
 
-        /* Initialize ((stat) all the entries which have not been stated, in readdir() order */
+        set_thread_status(file_path(parent, parent_entry->name), "scandir");
+
+        // Initialize with fstatat() all the entries which have not been stated, in readdir() order
         for (int i = 0; i < nd->entries; i++) {
                 Entry *e = &nd->array[i];
-                if (e->state==ENTRY_CREATED) init_entry(e, nd->fd, e->name);
+                init_entry(e, nd->fd, e->name);
         }
-        set_thread_status(file_path(parent, entry->name), "scandir done");
+        set_thread_status(file_path(parent, parent_entry->name), "scandir done");
         dir_close(nd);
-        entry->state=ENTRY_SCAN_READY;
         assert(nd->ref>0);
         return nd;
 }
