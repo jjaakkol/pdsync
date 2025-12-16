@@ -224,8 +224,7 @@ static int dir_openat_locked(Directory *parent, const char *name)
                         show_error_dir("dir_openat: probably a fd leak BUG", parent, name);
                         abort();
                 }
-
-                show_error_dir("dir_openat", parent, name);
+                // show_error_dir("dir_openat", parent, name); // Caller shows error message
         }
         if (parent && pfd>=0) dir_close_locked(parent);
         return dfd;

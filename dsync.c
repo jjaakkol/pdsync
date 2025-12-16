@@ -591,7 +591,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         Directory *del=NULL;
         int i;
  
-        // We only read_directory. fstat of the removed inodes is not necessary
+        // We only read_directory. fstat of the removed inodes is not
         del=read_directory(to, tentry);
         if (!del) {
                 write_error("read_directory", to, tentry->name);
@@ -1394,7 +1394,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         set_thread_status(file_path(to_parent, target), "sync checks");
 
         // Check if we have already tagged the target directory and can just skip everything
-        if (sync_tag) {
+        if (to_parent && sync_tag) {
                 int fd=dir_openat(to_parent, target);
                 if (fd>=0) {
                         char buf[256];
