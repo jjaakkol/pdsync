@@ -536,8 +536,7 @@ void print_progress() {
         const char *less_or_equal = (scans.read_directory_jobs>0) ? "<" : "=";
         float percent=100;
         if (files_total>0) percent=(100.0*files_synced)/files_total;
-        if (progress==1) fprintf(tty_stream,"\033[1A\033[K");
-        fprintf(tty_stream, "# PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
+        fprintf(tty_stream, "\033[K PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
         fprintf(tty_stream,"%d/%d files %s%2.1f%% |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle | %s\n",
                 files_synced,
                 files_total,
@@ -550,9 +549,10 @@ void print_progress() {
                 scans.idle_threads,
                 status
         );
+        if (progress==1) fprintf(tty_stream,"\033[1A");
         if (progress>=2) print_opers(tty_stream,&opers);
         if (progress>=3) print_scans(&scans);
- 
+        fflush(tty_stream);
         last_synced=files_synced;
         last_bytes=opers.bytes_copied;
         last_ns=now_ns;
@@ -840,7 +840,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         int from_dfd = dir_open(from);
         fromfd=openat(from_dfd, source, O_RDONLY|O_NOFOLLOW);
         if (fromfd<0) {
-                show_error_dir("open", from, source);
+                show_error_dir("open source", from, source);
                 goto fail; 
         }
         num_jobs= (entry_stat(fentry)->st_size + copy_job_size - 1) / copy_job_size;
@@ -849,7 +849,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         // mmap() IO needs RDWR access
         tofd = openat(to_dfd, target, O_RDWR | O_CREAT | O_NOFOLLOW,  0777);
         if(tofd<0) {
-                write_error("open", to, target);
+                write_error("open target", to, target);
                 goto fail;
         }
 
@@ -1413,7 +1413,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                         char buf[256];
                         size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
                         if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
-                                item("# tagged", to_parent, target);
+                                if (itemize>1) item("# tagged", to_parent, target);
                                 scans.dirs_skipped++;
                                 close(fd);
                                 return 0;
@@ -1438,7 +1438,6 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                         write_error("Can't open parent directory", to_parent, ".");
                         goto fail;
                 }
-                target_stat.st_mode=0;
                 if (fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)==0) {
                         if ( target_stat.st_ino == source_stat.st_ino && target_stat.st_dev == source_stat.st_dev ) {
                                 /* Attempt to recurse into source directory */
@@ -1495,7 +1494,17 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 for(int i=0; i<from->entries; i++) {
                         if (entry_isdir_i(from ,i)) {
                                 Entry *fentry=dir_entry(from,i);
-                                const char *target=fentry->name;
+                                char *target=fentry->name;
+                                int dfd=dir_open(from);
+                                if (dfd>=0) {
+                                        init_entry(fentry, dfd, target);
+                                } else {
+                                        read_error("dir_open", from, fentry->name);
+                                        item("# directory open failed", from, fentry->name);
+                                        opers.read_errors++;
+                                        continue;
+                                }
+                                dir_close(from);
 
                                 // Should the target dir be excluded
                                 if (should_exclude(from, fentry)) {
@@ -1511,7 +1520,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
 
                                 if (entry_stat(fentry)->st_ino == target_root.stat.st_ino &&  entry_stat(fentry)->st_dev == target_root.stat.st_dev ) {
 	                                // Attempt to recurse into target directory
-                                        show_warning("skipping target directory", file_path(to, target));
+                                        show_warning("skipping target directory", file_path(from, target));
 	                                skip_entry(to, fentry);
                                         continue;
                                 }
@@ -1542,9 +1551,16 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 goto fail;
         }
 
-        // We can start removing files in another thread while we are syncing them here
+        // We can remove files in other thread while syncing here
         if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
-        submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
+
+        // Try run scheduled jobs too, even if we have jobs in queue.
+        if (scans.jobs_run%11==0) {
+                submit_job(from, parent_fentry, to, target, 0, sync_files);
+        } else {
+                submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
+        }
+
 
 fail:
         if (from) d_freedir(from);
@@ -1639,7 +1655,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	                } else {
                                 // The target entry was found and is up to date
                                 atomic_fetch_add(&scans.files_synced,1);
-		                item2("# OK", to, todir);
+		                item2("OK", to, tentry->name);
                                 continue;
 	                }
 	        }
