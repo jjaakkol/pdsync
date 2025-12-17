@@ -90,10 +90,13 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
 
         if (fstatat(dfd, name, &entry->_stat, AT_SYMLINK_NOFOLLOW) < 0)
         {
-                show_error("fstatat", name);
+                // This happens if file was removed after readdir(), maybe by sync_remove()
+                if (errno!=ENOENT) show_error("fstatat", name);
+                entry->state = ENTRY_FAILED;
         }
         else if (S_ISLNK(entry->_stat.st_mode))
         {
+                // FIXME: move symlink reading to symlink handler
                 /* Read the symlink if there is one. FIXME: maybe skip this if we don't have --preserve-links */
                 char linkbuf[MAXLEN];
                 int link_len;
@@ -469,29 +472,25 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
 }
 
 // FIXME: scan_directory should to be split to smaller jobs or use io_uring
-Directory *scan_directory(Directory *parent, Entry *parent_entry)
+Directory *scan_directory(Directory *nd)
 {
-        assert(!parent || parent->magick != 0xDADDEAD);
-        assert(!parent || parent->magick == 0xDADDAD);
-
-        //printf("scan directory %s\n", file_path(parent, entry->name));
+        assert(nd && nd->magick == 0xDADDAD);
+        Entry *parent_entry=nd->parent_entry;
         if (parent_entry->state==ENTRY_FAILED) return NULL;
 
-        Directory *nd=parent_entry->dir;
-        assert(nd);
         if (dir_open(nd)<0) {
-                show_error_dir("scan directory", parent, parent_entry->name);
+                show_error_dir("scan directory", nd, ".");
                 return NULL;
         }
 
-        set_thread_status(file_path(parent, parent_entry->name), "scandir");
+        set_thread_status(dir_path(nd), "scandir");
 
         // Initialize with fstatat() all the entries which have not been stated, in readdir() order
         for (int i = 0; i < nd->entries; i++) {
                 Entry *e = &nd->array[i];
                 if (e->state<=ENTRY_INIT) init_entry(e, nd->fd, e->name);
         }
-        set_thread_status(file_path(parent, parent_entry->name), "scandir done");
+        set_thread_status(dir_path(nd), "scandir done");
         dir_close(nd);
         assert(nd->ref>0);
         return nd;

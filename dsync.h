@@ -200,7 +200,7 @@ int print_jobs(FILE *f);
 
 // Interface to directory.c
 Entry *directory_lookup(const Directory *d, const char *name);
-Directory *scan_directory(Directory *parent, Entry *e);
+Directory *scan_directory(Directory *dir);
 Directory *read_directory(Directory *parent, Entry *parent_entry);
 Entry *init_entry(Entry *entry, int dfd, char *name);
 void d_freedir(Directory *dir);

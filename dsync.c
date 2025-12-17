@@ -1535,22 +1535,6 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         // Read directory part had ended.
         atomic_fetch_add(&scans.read_directory_jobs, -1);
 
-        from=scan_directory(from_parent, parent_fentry);
-        if (from==NULL) {
-                read_error("scan_directory", from_parent, parent_fentry->name);
-                item("# directory scan failed", from_parent, parent_fentry->name);
-	        opers.read_errors++;
-	        goto fail;
-        }
-
-        assert(parent_tentry->dir);
-        to=scan_directory(to_parent, parent_tentry);
-        if (to==NULL) {
-                read_error("scan_directory", to_parent, parent_tentry->name);
-                item("# directory scan failed", to_parent, target);
-                goto fail;
-        }
-
         // We can remove files in other thread while syncing here
         if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
 
@@ -1575,13 +1559,28 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 
         strncpy(todir,target,sizeof(todir)-1);
 
+        from=scan_directory(from);
+        if (from==NULL) {
+                read_error("scan_directory", from, ".");
+                item("# source directory scan failed", from, ".");
+	        opers.read_errors++;
+                return RET_FAILED;
+        }
+
+        to=scan_directory(to);
+        if (to==NULL) {
+                read_error("scan_directory", to, ".");
+                item("# targetdirectory scan failed", to, ".");
+                return RET_FAILED;
+        }
+
         // Loop through the source directory and check for changes
         for(int i=0; i<from->entries; i++) {
 	        Entry *fentry=&from->array[i];
 	        Entry *tentry=NULL;
 
                 if (fentry->state == ENTRY_FAILED) {
-                        item("# Read error, skipping\n", from, fentry->name);
+                        item("# File has gone away\n", from, fentry->name);
                         atomic_fetch_add(&opers.read_errors, 1);
                         continue;
                 }
