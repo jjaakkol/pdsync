@@ -414,8 +414,11 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
     }
-    if (scans->read_directory_jobs>0) {
-	printf("%8d read directory jobs left\n",scans->read_directory_jobs);
+    if (scans->sync_directory_queue>0) {
+	printf("%8d Directories found and queued\n",scans->sync_directory_queue);
+    }
+    if (scans->sync_directory_running>0) {
+	printf("%8d Directory reads running\n",scans->sync_directory_running);
     }
 }
 
@@ -534,7 +537,7 @@ void print_progress() {
         int files_synced=atomic_load(&scans.files_synced);
         // FIXME: get rid of descendants
         int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
-        const char *less_or_equal = (scans.read_directory_jobs>0) ? "<" : "=";
+        const char *less_or_equal = (scans.sync_directory_queue>0) ? "<" : "=";
         float percent=100;
         if (files_total>0) percent=(100.0*files_synced)/files_total;
         fprintf(tty_stream, "\033[K PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
@@ -1402,10 +1405,12 @@ JobResult sync_remove(Directory *from, Entry *parent_fentry, Directory *to, cons
 }
 
 JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t depth) {
+        Directory *from=NULL;
         Directory *to=NULL;
         assert(parent_fentry);
 
         set_thread_status(file_path(to_parent, target), "sync dir");
+        atomic_fetch_add(&scans.sync_directory_running, 1);
 
         // Check if we have already tagged the target directory and can just skip everything
         if (to_parent && sync_tag) {
@@ -1417,17 +1422,17 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                 if (itemize>1) item("# tagged", to_parent, target);
                                 scans.dirs_skipped++;
                                 close(fd);
-                                return 0;
+                                goto fail;
                         }
                 }
                 close(fd);
         }
 
-        Directory *from=read_directory(from_parent, parent_fentry);
+        from=read_directory(from_parent, parent_fentry);
         if (!from) {
                 item2("# skipping non readable diretory", from_parent, parent_fentry->name);
                 atomic_fetch_add(&opers.read_errors, 1);
-                return RET_FAILED;
+                goto fail;
         }
 
         // Create new target directory if it does not exist.
@@ -1488,7 +1493,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         }
         assert(parent_tentry->dir);
 
-        // We are ready to submit more sync_directory jobs
+        // We are ready to submit more sync_directory() jobs
         if (recursive) {
                 set_thread_status(dir_path(to), "submitting jobs");
 
@@ -1527,25 +1532,33 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                 }
 
                                 // Now we can submit the depth+1 job
-                                atomic_fetch_add(&scans.read_directory_jobs, 1);
+                                atomic_fetch_add(&scans.sync_directory_queue, 1);
                                 submit_job_first(from, fentry, to, target, depth+1, sync_directory);
                         }
                 }
         }
 
-        // Read directory part had ended.
-        atomic_fetch_add(&scans.read_directory_jobs, -1);
+        // sync_directory() part is done
+        atomic_fetch_add(&scans.sync_directory_running, -1);
+        atomic_fetch_add(&scans.sync_directory_queue, -1);
 
         // File remove can be done in another thread
         if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
 
         // Ready to sync files now.
         submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
-fail:
+
+        JobResult ret=RET_OK;
+ret:
         if (from) d_freedir(from);
         if (to) d_freedir(to);
+        return ret;
 
-        return 0;
+fail:
+        atomic_fetch_add(&scans.sync_directory_running, -1);
+        atomic_fetch_add(&scans.sync_directory_queue, -1);
+        ret=RET_FAILED;
+        goto ret;
 }
 
 JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset) {
@@ -1728,7 +1741,7 @@ int main(int argc, char *argv[]) {
         init_entry(&source_root, sfd, s_frompath);
 
         // start the threads, job queue and wait the submitted job to finish
-        atomic_fetch_add(&scans.read_directory_jobs, -1);
+        atomic_fetch_add(&scans.sync_directory_queue, 1);
         submit_job(NULL, &source_root, NULL, s_topath, 0, sync_directory);
         start_job_threads(threads);
 

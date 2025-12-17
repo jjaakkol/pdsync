@@ -85,7 +85,8 @@ typedef struct
         atomic_int files_synced;
         atomic_int hard_links_saved;
 
-        atomic_int read_directory_jobs; // Jobs reading a Directory. If all dirs have been read this is 0
+        atomic_int sync_directory_queue;   // queued jobs to sync a directory. If all dirs have been read this is 0
+        atomic_int sync_directory_running; // sync_directory() jobs currently running
         int maxjobs;
         int queued;
         int jobs_waiting;      // Jobs waiting for other jobs to finish
