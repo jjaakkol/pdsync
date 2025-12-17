@@ -10,20 +10,35 @@ runtest() {
   if [ $ret != $expect ]; then
 	echo  "#### !!!! Wrong return value $ret != $expect"
   fi
+  if [ $ret -ge 10 ]; then
+ 	echo "#### CRASH. exiting"
+        exit 1
+  fi
   sync
 }
 
-echo "# pdsync sync test"
-runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+echo "# pdsync short test"
+runtest 1 ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-* dsync-target
+echo "# pdsync verify. No output."
+runtest 0 ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-* dsync-target
+echo "# rsync verify. No output."
+runtest 0 rsync -i --archive --hard-links --delete dsync-test/linux-*/. dsync-target/.
+echo "# pdsync delete test. No output."
+runtest 1 ./pdsync --archive --delete dsync-test/emptydir/. dsync-target/.
+echo "# pdsync test. No output."
+runtest 0 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# pdsync verify test. No output."
 runtest 0 ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# rsync verify test. No output."
 runtest 0 rsync --archive --hard-links --sparse -i --delete dsync-test/. dsync-target/.
-echo "# pdsync --reflink test"
+echo "# pdsync --reflink --sync-tag test"
 mkdir -vp dsync-target/reflink
-runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-target dsync-target/reflink
+runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+echo "# pdsync --sync-tag test: should do nothing. "
+runtest 0 ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
 echo "# pdsync delete test"
 runtest 1 ./pdsync -P --stats  --threads=32 --archive --delete dsync-test/emptydir dsync-target
+exit 0
 echo "# rsync sync time test. No output."
 runtest 0 rsync --archive --hard-links --delete dsync-test/. dsync-target/.
 echo "# rsync delete test. No output."
