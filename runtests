@@ -25,8 +25,8 @@ echo "# rsync verify. No output."
 runtest 0 rsync -i --archive --hard-links --delete dsync-test/linux-*/. dsync-target/.
 echo "# pdsync delete test. No output."
 runtest 1 ./pdsync --archive --delete dsync-test/emptydir/. dsync-target/.
-echo "# pdsync test. No output."
-runtest 0 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+echo "# pdsync long test."
+runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# pdsync verify test. No output."
 runtest 0 ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
 echo "# rsync verify test. No output."
