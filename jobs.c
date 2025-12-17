@@ -260,13 +260,17 @@ void submit_or_run_job(Directory *from, Entry *fentry, Directory *to, const char
         // pthread-local recursion depth counter for submit_or_run_job
         static _Thread_local int submit_or_run_job_depth = 0;
 
-        // Arbitrarily selected thresholds for queue length
         // sync_directory -> sync_files -> create_target ->  copy_regular depth == 4
         assert(submit_or_run_job_depth <5);
-        if (scans.queued < threads * 4) {
+
+        // Arbitrarily selected thresholds for queue length
+        // Attempto to keep some sync_directory() jobs always running
+        if (scans.queued < threads * 4 ||
+                (scans.read_directory_jobs>0 && scans.read_directory_jobs<threads*2/3) ) {
                 submit_job(from, fentry, to, target, offset, callback);
                 return;
         }
+        // Run job directly
         submit_or_run_job_depth++;
         callback(from , fentry, to, target, offset);
         atomic_fetch_add(&scans.jobs_run, 1);
