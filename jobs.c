@@ -265,7 +265,8 @@ void submit_or_run_job(Directory *from, Entry *fentry, Directory *to, const char
 
         // Arbitrarily selected thresholds for queue length and
         // Attempt to keep sync_directory() jobs always running
-        if (scans.queued < threads * 4 ||
+        if (scans.idle_threads>0  || 
+                scans.queued-scans.jobs_waiting < threads * 4 ||
                 (scans.sync_directory_queue>scans.sync_directory_running && scans.sync_directory_running<threads/2) ) {
                 submit_job(from, fentry, to, target, offset, callback);
                 return;
