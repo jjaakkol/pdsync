@@ -255,14 +255,22 @@ Job *submit_job_real(Directory *from, Entry *fentry, Directory *to, const char *
         return job;
 }
 
-// Optiomization: if queuess are full skip job submission and run it directly
+// Optimization: if queues are full skip job queue and run it directly
 void submit_or_run_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
+        // pthread-local recursion depth counter for submit_or_run_job
+        static _Thread_local int submit_or_run_job_depth = 0;
+
+        // Arbitrarily selected thresholds for queue length
+        // sync_directory -> sync_files -> create_target ->  copy_regular depth == 4
+        assert(submit_or_run_job_depth <5);
         if (scans.queued < threads * 4) {
                 submit_job(from, fentry, to, target, offset, callback);
                 return;
         }
+        submit_or_run_job_depth++;
         callback(from , fentry, to, target, offset);
         atomic_fetch_add(&scans.jobs_run, 1);
+        submit_or_run_job_depth--;
 }
 
 Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
