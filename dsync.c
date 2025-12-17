@@ -1540,7 +1540,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
 
         // Ready to sync files now.
-        if (scans.read_directory_jobs < threads/2) {
+        if (scans.read_directory_jobs < threads*2/3) {
                 // Try to strike a balance between sync_directory() and sync_files jobs
                 submit_job(from, parent_fentry, to, target, 0, sync_files);
         } else {
