@@ -1,5 +1,7 @@
 #!/bin/bash
 export TIMEFORMAT='%2Rs (%P%% CPU)'
+threads=32
+pdsync_args="--stats --threads=$threads --hard-links --sparse --archive --delete"
 
 runtest() {
   expect=$1
@@ -18,26 +20,26 @@ runtest() {
 }
 
 echo "# pdsync short test"
-runtest 1 ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-* dsync-target
+runtest 1 ./pdsync $pdsync_args dsync-test/linux-* dsync-target
 echo "# pdsync verify. No output."
-runtest 0 ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-* dsync-target
+runtest 0 ./pdsync -i $pdsync_args dsync-test/linux-* dsync-target
 echo "# rsync verify. No output."
 runtest 0 rsync -i --archive --hard-links --delete dsync-test/linux-*/. dsync-target/.
 echo "# pdsync delete test. No output."
-runtest 1 ./pdsync --archive --delete dsync-test/emptydir/. dsync-target/.
+runtest 1 ./pdsync $pdsync_args dsync-test/emptydir/. dsync-target/.
 echo "# pdsync long test."
-runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+runtest 1 ./pdsync -P $pdsync_args dsync-test dsync-target
 echo "# pdsync verify test. No output."
-runtest 0 ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+runtest 0 ./pdsync -P -i $pdsync_args dsync-test dsync-target
 echo "# rsync verify test. No output."
 runtest 0 rsync --archive --hard-links --sparse -i --delete dsync-test/. dsync-target/.
 echo "# pdsync --reflink --sync-tag test"
 mkdir -vp dsync-target/reflink
-runtest 1 ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+runtest 1 ./pdsync -P $pdsync_args --reflink --sync-tag=testitag dsync-target dsync-target/reflink
 echo "# pdsync --sync-tag test: should do nothing. "
-runtest 0 ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+runtest 0 ./pdsync -P -i $pdsync_args --reflink --sync-tag=testitag dsync-target dsync-target/reflink
 echo "# pdsync delete test"
-runtest 1 ./pdsync -P --stats  --threads=32 --archive --delete dsync-test/emptydir dsync-target
+runtest 1 ./pdsync -P $pdsync_args dsync-test/emptydir dsync-target
 exit 0
 echo "# rsync sync time test. No output."
 runtest 0 rsync --archive --hard-links --delete dsync-test/. dsync-target/.
