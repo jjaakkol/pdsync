@@ -1404,7 +1404,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         Directory *to=NULL;
         assert(parent_fentry);
 
-        set_thread_status(file_path(to_parent, target), "sync checks");
+        set_thread_status(file_path(to_parent, target), "sync dir");
 
         // Check if we have already tagged the target directory and can just skip everything
         if (to_parent && sync_tag) {
@@ -1525,7 +1525,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                         continue;
                                 }
 
-                                // Now we are allowed to submit the depth+1 job
+                                // Now we can submit the depth+1 job
                                 atomic_fetch_add(&scans.read_directory_jobs, 1);
                                 submit_job_first(from, fentry, to, target, depth+1, sync_directory);
                         }
@@ -1535,17 +1535,11 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         // Read directory part had ended.
         atomic_fetch_add(&scans.read_directory_jobs, -1);
 
-        // We can remove files in other thread while syncing here
+        // File remove can be done in another thread
         if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
 
-        // Try run scheduled jobs too, even if we have jobs in queue.
-        if (scans.jobs_run%11==0) {
-                submit_job(from, parent_fentry, to, target, 0, sync_files);
-        } else {
-                submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
-        }
-
-
+        // Ready to sync files now
+        submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
 fail:
         if (from) d_freedir(from);
         if (to) d_freedir(to);
