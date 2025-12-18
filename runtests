@@ -10,7 +10,8 @@ runtest() {
   eval time $@
   ret=$?
   if [ $ret != $expect ]; then
-	echo  "#### !!!! Wrong return value $ret != $expect"
+	echo  "#### !!!! Wrong return value $ret != $expect. Exiting"
+	exit 1
   fi
   if [ $ret -ge 10 ]; then
  	echo "#### CRASH. exiting"
@@ -19,13 +20,19 @@ runtest() {
   sync
 }
 
+echo "# short sanity tests"
+touch dsync-target/removed
+runtest 1 ./pdsync -i $pdsync_args dsync-test/dir-is-in-the-way dsync-target
+runtest 2 ./pdsync -i --archive dsync-test/symlinks dsync-target
+runtest 1 ./pdsync -i $pdsync_args dsync-test/symlinks dsync-target
+runtest 1 ./pdsync -i $pdsync_args dsync-test/dir-is-in-the-way dsync-target
 echo "# pdsync short test"
 runtest 1 ./pdsync $pdsync_args dsync-test/linux-* dsync-target
 echo "# pdsync verify. No output."
 runtest 0 ./pdsync -i $pdsync_args dsync-test/linux-* dsync-target
 echo "# rsync verify. No output."
 runtest 0 rsync -i --archive --hard-links --delete dsync-test/linux-*/. dsync-target/.
-echo "# pdsync delete test. No output."
+echo "# pdsync delete test"
 runtest 1 ./pdsync $pdsync_args dsync-test/emptydir/. dsync-target/.
 echo "# pdsync long test."
 runtest 1 ./pdsync -P $pdsync_args dsync-test dsync-target
@@ -36,8 +43,12 @@ runtest 0 rsync --archive --hard-links --sparse -i --delete dsync-test/. dsync-t
 echo "# pdsync --reflink --sync-tag test"
 mkdir -vp dsync-target/reflink
 runtest 1 ./pdsync -P $pdsync_args --reflink --sync-tag=testitag dsync-target dsync-target/reflink
-echo "# pdsync --sync-tag test: should do nothing. "
+echo "# pdsync --sync-tag test: should do nothing"
 runtest 0 ./pdsync -P -i $pdsync_args --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+
+echo "# pdsync symlink delete test. No output."
+runtest 1 ./pdsync $pdsync_args dsync-test/symlinks/. dsync-target/.
+
 echo "# pdsync delete test"
 runtest 1 ./pdsync -P $pdsync_args dsync-test/emptydir dsync-target
 exit 0

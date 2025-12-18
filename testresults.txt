@@ -1,64 +1,228 @@
-# pdsync sync test
-# Running test expecting 1: ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+# short sanity tests
+# Running test expecting 1: ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/dir-is-in-the-way dsync-target
+Using max_open_dirs=880
 # Some files were changed.
-#  ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
-Walltime 00:01:28.859, CPUtime 00:03:22.418 (227.8%)
-      50 directories created
-  524480 files copied, 5902.4f/s
- 36.0GiB bytes copied, 414.9MiB/s
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/removed
+mkdir: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+mkdir: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+mkdir: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+CP: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+chmod: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/.
+CP: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+chmod: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/.
+CP: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+chmod: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/.
+touch: /home/jjaakkol/git/pdsync/dsync-target/.
+#  ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/dir-is-in-the-way dsync-target
+Walltime 00:00:00.657, CPUtime 00:00:00.019 (2.9%)
+       3 directories created
+       1 entries removed
+       3 files copied, 4.6f/s
+     21B bytes copied,    31B/s
       0B bytes checked,     0B/s
-896.0KiB data in sparse blocks
-       2 symlinks created
-     125 hard links created
-  524522 file chmod bits changed
-  524537 file atime/mtime changed
-# Pdsync 1.9-2025-12-08_23:07:37 finished at 2025-12-09 00:18:23 with status 1
-88.04s (229.92% CPU)
-# pdsync verify test. No output.
-# Running test expecting 0: ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
-# No changes to any files.
-#  ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
-Walltime 00:00:02.242, CPUtime 00:00:03.677 (164.0%)
+       3 file chmod bits changed
+       7 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:51:04 with status 1
+0.00s (318.84% CPU)
+# Running test expecting 2: ./pdsync -i --archive dsync-test/symlinks dsync-target
+Using max_open_dirs=992
+Error: A different type of file is in the way. Consider --delete /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1: errno==0
+Write error, exiting immediately
+0.00s (122.87% CPU)
+# Running test expecting 1: ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/symlinks dsync-target
+Using max_open_dirs=880
+# Some files were changed.
+mv: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_3151ce308f53c632
+ln -s: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+mv: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_bda3b579f1dceb0f
+ln -s: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+mv: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_e538ecc56671d7d3
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_3151ce308f53c632/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_bda3b579f1dceb0f/file-is-in-the-way-too
+rmdir: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_3151ce308f53c632/pdsync_rename_to_rm-r_3151ce308f53c632
+ln -s: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+touch: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+rmdir: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_bda3b579f1dceb0f/pdsync_rename_to_rm-r_bda3b579f1dceb0f
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_e538ecc56671d7d3/file-is-in-the-way-too
+rmdir: /home/jjaakkol/git/pdsync/dsync-target/pdsync_rename_to_rm-r_e538ecc56671d7d3/pdsync_rename_to_rm-r_e538ecc56671d7d3
+touch: /home/jjaakkol/git/pdsync/dsync-target/.
+#  ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/symlinks dsync-target
+Walltime 00:00:01.106, CPUtime 00:00:00.017 (1.6%)
+       3 directories removed
+       3 entries removed
       0B bytes copied,     0B/s
       0B bytes checked,     0B/s
-# Pdsync 1.9-2025-12-08_23:07:37 finished at 2025-12-09 00:18:25 with status 0
-0.81s (454.78% CPU)
+       3 symlinks created
+       4 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:51:04 with status 1
+0.00s (259.40% CPU)
+# Running test expecting 1: ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/dir-is-in-the-way dsync-target
+Using max_open_dirs=880
+# Some files were changed.
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+mkdir: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+rm -f: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+mkdir: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+mkdir: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+CP: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+chmod: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+CP: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+CP: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+chmod: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+chmod: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/.
+touch: /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/.
+touch: /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/.
+touch: /home/jjaakkol/git/pdsync/dsync-target/.
+#  ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/dir-is-in-the-way dsync-target
+Walltime 00:00:01.139, CPUtime 00:00:00.018 (1.6%)
+       3 directories created
+       3 entries removed
+       3 files copied, 2.6f/s
+     21B bytes copied,    18B/s
+      0B bytes checked,     0B/s
+       3 file chmod bits changed
+       7 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:51:04 with status 1
+0.01s (245.01% CPU)
+# pdsync short test
+# Running test expecting 1: ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-6.15.2 dsync-target
+Using max_open_dirs=880
+# Some files were changed.
+#  ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-6.15.2 dsync-target
+Walltime 00:00:02.866, CPUtime 00:00:13.772 (480.4%)
+    5894 directories created
+       3 directories removed
+       3 entries removed
+   88735 files copied, 30951.6f/s
+  1.4GiB bytes copied, 502.2MiB/s
+      0B bytes checked,     0B/s
+      79 symlinks created
+   94659 file chmod bits changed
+   94738 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:51:06 with status 1
+1.69s (811.77% CPU)
+# pdsync verify. No output.
+# Running test expecting 0: ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-6.15.2 dsync-target
+Using max_open_dirs=880
+# No changes to any files.
+#  ./pdsync -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/linux-6.15.2 dsync-target
+Walltime 00:00:02.205, CPUtime 00:00:01.294 (58.7%)
+      0B bytes copied,     0B/s
+      0B bytes checked,     0B/s
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:51:07 with status 0
+0.33s (386.18% CPU)
+# rsync verify. No output.
+# Running test expecting 0: rsync -i --archive --hard-links --delete dsync-test/linux-6.15.2/. dsync-target/.
+0.74s (91.61% CPU)
+# pdsync delete test
+# Running test expecting 1: ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/emptydir/. dsync-target/.
+Using max_open_dirs=880
+# Some files were changed.
+#  ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/emptydir/. dsync-target/.
+Walltime 00:00:02.495, CPUtime 00:00:08.905 (356.9%)
+    5894 directories removed
+   88795 entries removed
+      0B bytes copied,     0B/s
+      0B bytes checked,     0B/s
+       1 file chmod bits changed
+       1 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:51:17 with status 1
+0.89s (998.79% CPU)
+# pdsync long test.
+# Running test expecting 1: ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+Using max_open_dirs=880
+# Some files were changed.
+#  ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+Walltime 00:00:55.418, CPUtime 00:02:22.866 (257.8%)
+    5949 directories created
+  613218 files copied, 11065.3f/s
+ 37.4GiB bytes copied, 691.2MiB/s
+      0B bytes checked,     0B/s
+896.0KiB data in sparse blocks
+      82 symlinks created
+     125 hard links created
+       1 fifos created
+  619185 file chmod bits changed
+  619283 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:52:17 with status 1
+55.17s (258.96% CPU)
+# pdsync verify test. No output.
+# Running test expecting 0: ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+Using max_open_dirs=880
+# No changes to any files.
+#  ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete dsync-test dsync-target
+Walltime 00:00:01.331, CPUtime 00:00:04.618 (346.8%)
+      0B bytes copied,     0B/s
+      0B bytes checked,     0B/s
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:52:23 with status 0
+0.74s (618.47% CPU)
 # rsync verify test. No output.
 # Running test expecting 0: rsync --archive --hard-links --sparse -i --delete dsync-test/. dsync-target/.
-3.60s (106.39% CPU)
-# pdsync --reflink test
-# Running test expecting 1: ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-target dsync-target/reflink
-Warning: skipping target directory: /home/jjaakkol/git/pdsync/dsync-target/reflink/reflink
+4.48s (103.44% CPU)
+# pdsync --reflink --sync-tag test
+# Running test expecting 1: ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+Using max_open_dirs=880
+Warning: skipping target directory: /home/jjaakkol/git/pdsync/dsync-target/reflink
 # Some files were changed.
-#  ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-target dsync-target/reflink
-Walltime 00:00:02.682, CPUtime 00:00:01.955 (72.9%)
-       6 directories created
-     125 entries removed
-     319 files copied, 118.9f/s
-  2.0MiB bytes copied, 746.2KiB/s
+#  ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+Walltime 00:00:02.444, CPUtime 00:00:11.196 (458.1%)
+    5905 directories created
+   89089 files reflinked      0B bytes copied,     0B/s
       0B bytes checked,     0B/s
-  1.0MiB data in sparse blocks
-       2 symlinks created
+      82 symlinks created
      125 hard links created
-     321 file chmod bits changed
-     333 file atime/mtime changed
-# Pdsync 1.9-2025-12-08_23:07:37 finished at 2025-12-09 00:18:34 with status 1
-0.75s (258.26% CPU)
-# pdsync delete test
-# Running test expecting 1: ./pdsync --stats --threads=32 --archive --delete dsync-test/emptydir dsync-target
+       1 fifos created
+   94984 file chmod bits changed
+   95079 file atime/mtime changed
+    5927 sync tags set
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:52:34 with status 1
+1.25s (891.18% CPU)
+# pdsync --sync-tag test: should do nothing
+# Running test expecting 0: ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+# No changes to any files.
+#  ./pdsync -P -i --stats --threads=32 --hard-links --sparse --archive --delete --reflink --sync-tag=testitag dsync-target dsync-target/reflink
+Walltime 00:00:01.077, CPUtime 00:00:00.003 (0.3%)
+      0B bytes copied,     0B/s
+      0B bytes checked,     0B/s
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:52:38 with status 0
+0.00s (174.26% CPU)
+# pdsync symlink delete test. No output.
+# Running test expecting 1: ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/symlinks/. dsync-target/.
+Using max_open_dirs=880
 # Some files were changed.
-#  ./pdsync --stats --threads=32 --archive --delete dsync-test/emptydir dsync-target
-Walltime 00:00:03.802, CPUtime 00:00:19.471 (512.1%)
-      56 directories removed
-  524647 entries removed
+#  ./pdsync --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/symlinks/. dsync-target/.
+Walltime 00:00:07.157, CPUtime 00:00:37.369 (522.1%)
+   11854 directories removed
+  702308 entries removed
+      0B bytes copied,     0B/s
+      0B bytes checked,     0B/s
+       3 symlinks created
+       1 file chmod bits changed
+       4 file atime/mtime changed
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:52:48 with status 1
+5.40s (691.72% CPU)
+# pdsync delete test
+# Running test expecting 1: ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/emptydir dsync-target
+Using max_open_dirs=880
+# Some files were changed.
+#  ./pdsync -P --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/emptydir dsync-target
+Walltime 00:00:00.770, CPUtime 00:00:00.005 (0.7%)
+       3 entries removed
       0B bytes copied,     0B/s
       0B bytes checked,     0B/s
        1 file atime/mtime changed
-# Pdsync 1.9-2025-12-08_23:07:37 finished at 2025-12-09 00:18:42 with status 1
-3.68s (529.24% CPU)
-# rsync sync test. No output.
-# Running test expecting 0: rsync --archive --delete dsync-test/. dsync-target/.
-71.73s (110.56% CPU)
-# rsync delete test. No output.
-# Running test expecting 0: rsync --archive --delete dsync-test/emptydir/. dsync-target/.
-9.53s (98.00% CPU)
+# Pdsync 1.9-2025-12-18_18:43:12 finished at 2025-12-18 18:52:51 with status 1
+0.00s (189.90% CPU)
