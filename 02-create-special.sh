@@ -5,8 +5,10 @@ cd dsync-test
 echo "This is a testdir for dir synchronization" > README.txt
 mkdir -vp symlinks
 ( cd symlinks && ln -vfs ../*5* .)
-( mkdir -p dir-is-in-the-way && cd symlinks && for d in *; do mkdir -vp ../dir-is-in-the-way/$d; done )
-( cd dir-is-in-the-way && for d in *; do echo foobar > $d/file-is-in-the-way-too; done )
+( mkdir -p dir-is-in-the-way && cd symlinks && for d in *-*; do mkdir -vp ../dir-is-in-the-way/$d; done )
+( cd dir-is-in-the-way && for d in *; do [ ! -L $d ] && echo foobar > $d/file-is-in-the-way-too; done ) || true
+( cd symlinks && ln -fs symlink1 yksi && ln -fs symlink2 kaksi )
+( cd dir-is-in-the-way && ln -fs symlink1 yksi && ln -fs symlink2 kolme )
 mkdir -vp hardlinks
 ( cd hardlinks && ln -vf ../*14*/testfile*012* .)
 rm  -v -f testfifo && mkfifo testfifo
