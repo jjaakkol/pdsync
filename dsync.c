@@ -379,49 +379,48 @@ static int parse_options(int argc, char *argv[]) {
 
 // Fixme: print to a given stream
 static void print_scans(const Scans *scans) {
-    if (scans->slow_io_secs) {
-        printf("%8d seconds of slow IO\n", scans->slow_io_secs);
-    }
-    if (scans->dirs_read) {
-	printf("%8d directories read\n",scans->dirs_read);
-    }
-    if (scans->entries_checked) {
-	printf("%8d files checked\n",scans->entries_checked);
-    }
-    if (scans->hard_links_saved) {
-        printf("%8d hard links found\n", scans->hard_links_saved);
-    }
-    if (scans->dirs_skipped) {
-	printf("%8d directories skipped\n",scans->dirs_skipped);
-    }
-    if (scans->files_skipped) {
-        printf("%8d files skipped\n",scans->files_skipped);
-    }
-    if (scans->jobs_run) {
-        printf("%8lld total number of jobs run\n", scans->jobs_run);
-    }
-    if (scans->jobs_waiting) {
-        printf("%8d jobs waiting\n", scans->jobs_waiting);
-    }
-    if (scans->dirs_active>=0) {
-        printf("%8d directories in memory now\n",scans->dirs_active);
-    }
-    if (scans->dirs_active_max) {
-	printf("%8d maximum number of directories in memory\n",
-	       scans->dirs_active_max);
-    }
-    if (scans->open_dir_count) {
-        printf("%8d directories open now\n",scans->open_dir_count);
-    }
-    if (scans->dirs_freed) {
-        printf("%8d directories freed\n",scans->dirs_freed);
-    }
-    if (scans->sync_directory_running>0) {
-	printf("%8d directory reads running\n",scans->sync_directory_running);
-    }
-    if (scans->sync_directory_queue>0) {
-	printf("%8d directories queued read for read\n",scans->sync_directory_queue);
-    }
+        if (scans->slow_io_secs) {
+                printf("%8d seconds of slow IO\n", scans->slow_io_secs);
+        }
+        if (scans->dirs_read) {
+	        printf("%8d directories read\n",scans->dirs_read);
+        }
+        if (scans->dirs_skipped) {
+                printf("%8d directories skipped\n",scans->dirs_skipped);
+        }
+        if (scans->sync_directory_running>0) {
+	        printf("%8d directory reads running\n",scans->sync_directory_running);
+        }
+        if (scans->sync_directory_queue>0) {
+	        printf("%8d directories queued for read\n",scans->sync_directory_queue);
+        }
+        if (scans->entries_checked) {
+	        printf("%8d files checked\n",scans->entries_checked);
+        }
+        if (scans->files_skipped) {
+                printf("%8d files skipped\n",scans->files_skipped);
+        }
+        if (scans->hard_links_saved) {
+                printf("%8d hard links found\n", scans->hard_links_saved);
+        }
+        if (scans->jobs_run) {
+                printf("%8lld total number of jobs run\n", scans->jobs_run);
+        }
+        if (scans->jobs_waiting) {
+                printf("%8d jobs waiting\n", scans->jobs_waiting);
+        }
+        if (scans->dirs_active>=0) {
+                printf("%8d directories in memory now\n",scans->dirs_active);
+        }
+        if (scans->dirs_active_max) {
+	        printf("%8d maximum number of directories in memory\n", scans->dirs_active_max);
+        }
+        if (scans->open_dir_count) {
+                printf("%8d directories open now\n",scans->open_dir_count);
+        }
+        if (scans->dirs_freed) {
+                printf("%8d directories freed\n",scans->dirs_freed);
+        }
 }
 
 static void print_opers(FILE *stream, const Opers *stats) {
