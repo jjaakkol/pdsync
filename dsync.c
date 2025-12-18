@@ -415,11 +415,11 @@ static void print_scans(const Scans *scans) {
     if (scans->dirs_freed) {
         printf("%8d directories freed\n",scans->dirs_freed);
     }
-    if (scans->sync_directory_queue>0) {
-	printf("%8d Directories found and queued\n",scans->sync_directory_queue);
-    }
     if (scans->sync_directory_running>0) {
-	printf("%8d Directory reads running\n",scans->sync_directory_running);
+	printf("%8d directory reads running\n",scans->sync_directory_running);
+    }
+    if (scans->sync_directory_queue>0) {
+	printf("%8d directories queued read for read\n",scans->sync_directory_queue);
     }
 }
 
@@ -455,7 +455,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
                 stats->files_copied*1000000000.0/ns);
     }
     if (stats->files_reflinked) {
-        fprintf(stream, "%8lld files reflinked", stats->files_reflinked);
+        fprintf(stream, "%8lld files reflinked\n", stats->files_reflinked);
     }
     char buf[32];
     fprintf(stream, "%8s bytes copied, ", format_bytes(stats->bytes_copied, buf));
