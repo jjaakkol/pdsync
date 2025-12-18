@@ -255,7 +255,7 @@ static int dir_open_locked(Directory *d)
                         fprintf(stderr,"Error: Max nummber of open files RLIMIT_NOFILE too low (%ld). Use ulimit -n to increase. Exiting.\n", rl.rlim_cur);
                         exit(1);
                 }
-                fprintf(stderr, "Using max_open_dirs=%d\n", max_open_dirs);
+                DEBUG("Using max_open_dirs=%d\n", max_open_dirs);
         }
 
         // Open the directory if not already open
