@@ -206,9 +206,10 @@ void show_error(const char *why, const char *file) {
 	        (errno==0) ? "errno==0" : strerror(errno));
 }
 
-void read_error(const char *why, const Directory *d, const char *file) {
+int read_error(const char *why, const Directory *d, const char *file) {
         atomic_fetch_add(&opers.read_errors, 1);
         show_error("Read error:", file_path(d, file));
+        return 0;
 }
 
 void write_error(const char *why, const Directory *d, const char *file) {
@@ -1183,12 +1184,7 @@ int entry_changed(Entry *from, Entry *to) {
                 return 0;
         }
 
-        /* If symlink names match don't update it. */
-        if (S_ISLNK(entry_stat(from)->st_mode) && 
-                S_ISLNK(entry_stat(to)->st_mode) &&
-                strcmp(from->link,to->link)==0) {
-                return 0; // Symlinks match
-        }
+        // symlinks targets are checked by create_symlink()
 
         // No reason to skip updating
         return 1;
@@ -1341,6 +1337,47 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         goto out;
 }
 
+// Job to create a symlink
+int create_symlink(Directory *from, Entry *fentry, Directory *to, const char *target, off_t depth) {
+        assert(S_ISLNK(entry_stat(fentry)->st_mode));
+        if (!preserve_links) return RET_OK;
+
+        set_thread_status(file_path(to,target),"symlink");
+
+        DIR_OPEN_FD(to, tofd)
+        {
+                char linkbuf[MAXLEN];
+                int link_len = readlinkat(tofd, target, linkbuf, sizeof(linkbuf) - 1);
+                if (link_len<0 && errno != ENOENT)
+                {
+                        // Failed to read existing link
+                        write_error("readlink", to, target);
+                        continue;
+                }
+                char source_linkbuf[MAXLEN];
+                int source_link_len=-1;
+                DIR_OPEN_FD(from, fromfd) {
+                        source_link_len = readlinkat(fromfd, fentry->name, source_linkbuf, sizeof(source_linkbuf) - 1);
+                }
+                if (source_link_len <= 0) {
+                        read_error("readlink", from, fentry->name);
+                } else if(source_link_len != link_len || memcmp(linkbuf, source_linkbuf, link_len) != 0) {
+                        // Link target differs, remove and update
+                        source_linkbuf[source_link_len] = '\0';
+                        if (unlink_file(to, target)==0 && !dryrun && symlinkat(source_linkbuf, tofd, target)==0) {
+                                item("ln -s", to, target);
+                                atomic_fetch_add(&opers.symlinks_created, 1);
+                        } else {
+                                write_error(source_linkbuf, to, target);
+                        }
+                } else {
+                        /* Link target is the same, nothing to do */
+                        item2("# symlink ok", to, target);
+                }
+        }
+        return RET_OK;
+}
+
 // Job callback to create one target inode, directory, file, FIFO, ... 
 int create_target(Directory *from, Entry *fentry, Directory *to, const char *target, off_t depth) {
         assert(from && fentry && to && target);
@@ -1365,15 +1402,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 goto out;
     
         } else if (S_ISLNK(entry_stat(fentry)->st_mode)) {
-        	if (!preserve_links) goto out;
-	        item("ln -s",to,target);
-	        if (!dryrun && symlinkat(fentry->link,tofd,target)<0) {
-                        write_error("symlinkat", to, target);
-                        goto fail;
-                } else {
-	                atomic_fetch_add(&opers.symlinks_created, 1);
-	        }
-
+                create_symlink(from, fentry, to, target, depth);
         } else if (S_ISSOCK(entry_stat(fentry)->st_mode)) {
                 if (opers.sockets_warned==0) {
                         show_error_dir("Sockets are ignored. Only first socket found is reported.", from,fentry->name);

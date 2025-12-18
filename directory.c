@@ -90,31 +90,16 @@ Entry *init_entry(Entry *entry, int dfd, char *name)
 
         if (fstatat(dfd, name, &entry->_stat, AT_SYMLINK_NOFOLLOW) < 0)
         {
-                // This happens if file was removed after readdir(), maybe by sync_remove()
-                if (errno!=ENOENT) show_error("fstatat", name);
-                entry->state = ENTRY_FAILED;
-        }
-        else if (S_ISLNK(entry->_stat.st_mode))
-        {
-                // FIXME: move symlink reading to symlink handler
-                /* Read the symlink if there is one. FIXME: maybe skip this if we don't have --preserve-links */
-                char linkbuf[MAXLEN];
-                int link_len;
-                if ((link_len = readlinkat(dfd, name, linkbuf, sizeof(linkbuf) - 1)) <= 0)
-                {
-                        /* Failed to read link. */
-                        show_error("readlink", name);
-                        /* FIXME: read errors is not visible here:
-                        opers.read_errors++; */
-                }
-                else
-                {
-                        /* Save the link */
-                        entry->link = my_malloc(link_len + 1);
-                        memcpy(entry->link, linkbuf, link_len);
-                        entry->link[link_len] = 0;
+                if (errno==ENOENT) {
+                        // File was removed after readdir(), maybe by sync_remove()
+                        // Ignore this, since if it was us it was intentional and if it was someone else it was intentional too.
+                        entry->state = ENTRY_DELETED;
+                } else {
+                        show_error("fstatat", name);
+                        entry->state = ENTRY_FAILED;
                 }
         }
+
         atomic_fetch_add(&scans.entries_checked, 1);
         entry->state=ENTRY_INIT;
         return entry;
@@ -185,8 +170,6 @@ static void dir_freedir_locked(Directory *dir)
         {
                 dir->entries--;
                 Entry *e = &dir->array[dir->entries];
-                if (e->link)
-                        free(e->link);
                 free(e->name);
         }
         free(dir->array);

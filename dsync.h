@@ -32,10 +32,6 @@ typedef enum
         ENTRY_CREATED,
         ENTRY_DIR,
         ENTRY_INIT,
-//        ENTRY_READ_RUNNING,
-//        ENTRY_READ_READY,
-//        ENTRY_SCAN_RUNNING,
-//        ENTRY_SCAN_READY,
         ENTRY_DELETED,
         ENTRY_FREED,
         ENTRY_FAILED // IO Error or another error
@@ -46,7 +42,6 @@ typedef struct
 {
         struct stat _stat;
         char *name;
-        char *link;
         struct DirectoryStruct *dir; // Subdirectory if this is a directory
         EntryState state;
 } Entry;
@@ -212,6 +207,11 @@ int dir_close(Directory *d);
 int dir_openat(Directory *d, const char *f);
 void dir_claim(Directory *dir);
 int file_stat(Directory *d, const char *name, struct stat *s);
+
+// Mighty clever macro to open a dir fd, handle errors and close it automatically
+#define DIR_OPEN_FD(DIR, FD)    for (int FD=dir_open(DIR);  \
+                                        (FD)>=0 || ((FD)==-1 && read_error("opendir", (DIR), ".") && 0); \
+                                        dir_close(DIR), FD=-2) 
 
 static inline Entry *dir_entry(Directory *d, int i) {
         Entry *e=&d->array[i];
