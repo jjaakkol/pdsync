@@ -21,6 +21,7 @@
 #include <sys/xattr.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
+#include <sys/random.h>
 
 // User selected options
 static char* const *static_argv;
@@ -570,8 +571,11 @@ int unlink_file(Directory *parent, const char *name) {
 
         int dfd=dir_open(parent);
         if (!dryrun && unlinkat(dfd, name, 0)) {
-                write_error("unlink", parent, name);
-                ret=-1;
+                // If some other thread or someone just removed the file, it's ok
+                if (errno!=ENOENT) {
+                        write_error("unlinkat()", parent, name);
+                        ret=-1;
+                }
         } else  {
                 item("rm -f", parent,name);
                 opers.entries_removed++;
@@ -652,6 +656,33 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         write_error("remove_hierarchy", to, tentry->name);
         ret=-1;
         goto cleanup;
+}
+
+// Rename target entry out of the way and then call remove_hierarchy
+int immediately_remove_hierarchy(Directory *to, Entry *entry) {
+        assert(delete);
+        const int tmplen=16;
+        unsigned char rand_bytes[tmplen/2];
+        char tmpname[256]="pdsync_rename_to_rm-r_";
+        if (getrandom(rand_bytes, sizeof(rand_bytes), 0) != sizeof(rand_bytes))
+            return -1;
+        for (int j = 0; j < 8; ++j)
+            sprintf(tmpname + strlen(tmpname), "%02x", rand_bytes[j]);
+        int dfd=dir_open(to);
+        if (dfd<0) return -1;
+        if (renameat(dfd, entry->name, dfd, tmpname)<0) {
+                write_error("renameat", to, entry->name);
+                dir_close(to);
+                return -1;
+        }
+        item("mv", to, tmpname);
+        // FIXME: this leaks tmp_entry worth of memory
+        Entry *tmp_entry=my_malloc(sizeof(Entry));
+        *tmp_entry=*entry;
+        tmp_entry->name=my_strdup(tmpname);
+        submit_job_first(NULL, tmp_entry, to, NULL, 0, remove_hierarchy);
+        dir_close(to);
+        return 0;
 }
 
 // Copy a file, preserving sparseness by punching holes using fallocate and mmap() I/O
@@ -1413,7 +1444,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         atomic_fetch_add(&scans.sync_directory_running, 1);
 
         // Check if we have already tagged the target directory and can just skip everything
-        if (to_parent && sync_tag) {
+        if (sync_tag) {
                 int fd=dir_openat(to_parent, target);
                 if (fd>=0) {
                         char buf[256];
@@ -1619,9 +1650,13 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                         if (fentry_type != tentry_type) {
                                 // Filetype mismatch: source and target are different types
                                 if (delete && S_ISDIR(tentry_type)) {
-                                        remove_hierarchy(NULL, tentry, to, NULL, 0);
+                                        // Remove hierarchy start jobs and we need this out of the way now. 
+                                        immediately_remove_hierarchy(to, tentry);
                                 } else if (delete) {
-                                        unlink_entry(to, tentry);
+                                        // If we have --recursive and ISDIR(fentry) this is handled by sync_directory()
+                                        if (!recursive || !S_ISDIR(fentry_type)) {
+                                                unlink_entry(to, tentry);
+                                        }
                                 } else {
                                         write_error("A different type of file is in the way. Consider --delete", to, tentry->name);
                                         continue;
@@ -1632,33 +1667,11 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	        // Check if the already existing target entry: keep it, update it or remove it
 	        if (tentry) {
                         if (entry_changed(fentry, tentry)) {
-                                // Target entry exists but needs sync or removing
+                                // Target entry existed, but something is changed
                                 if (S_ISREG((entry_stat(tentry)->st_mode))) {
-                                        // Updating an existing file
+                                        // FIXME: do this in copy_regular: Updating an existing file
                                         atomic_fetch_add(&opers.files_updated,1);
-                                } else if (S_ISLNK(entry_stat(tentry)->st_mode)) {
-                                        // Target is a symlink
-                                        if (S_ISLNK(entry_stat(fentry)->st_mode) && strcmp(fentry->link,tentry->link)==0) {
-                                                // Source is the same symlink, but metadata has changed
-                                                if (itemize>1) item("# symlink ok", to, tentry->name );
-                                                sync_metadata(from, fentry, to, tentry->name, 0);
-                                                continue;
-                                        } else if (delete) {
-                                                unlink_entry(to, tentry); // Unlink symlink
-                                        } else {
-                                                write_error("Symlink is in the way. Consider --delete", to, tentry->name);
-                                                continue;
-                                        }
-                                } else if (!S_ISDIR(entry_stat(tentry)->st_mode)) {
-                                        // Target is some other file type.
-                                        if (delete) {
-                                                unlink_entry(to, tentry);
-                                        } else {
-                                                write_error("File is in the way. Consider --delete", to, tentry->name);
-                                                continue;
-                                        }
                                 }
-
 	                } else {
                                 // The target entry was found and is up to date
                                 atomic_fetch_add(&scans.files_synced,1);
