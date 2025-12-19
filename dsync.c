@@ -1554,8 +1554,9 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
 
         // We are ready to submit more sync_directory() jobs
         if (recursive) {
-                set_thread_status(dir_path(to), "submitting jobs");
+                set_thread_status(dir_path(to), "stat() subdirs");
 
+                // FIXME: this loop should probably use io_uring
                 for(int i=0; i<from->entries; i++) {
                         if (entry_isdir_i(from ,i)) {
                                 Entry *fentry=dir_entry(from,i);
