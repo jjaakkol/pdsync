@@ -221,7 +221,8 @@ static inline Entry *dir_entry(Directory *d, int i) {
 static inline const struct stat *entry_stat(const Entry *e)
 {
         assert(e);
-        assert(e->state != ENTRY_CREATED && e->state != ENTRY_FAILED);
+        assert(e->state != ENTRY_CREATED);
+        assert(e->state != ENTRY_FAILED);
         return &e->_stat;
 }
 static inline const struct stat *dir_stat(const Directory *d)
