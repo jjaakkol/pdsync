@@ -458,20 +458,19 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         return NULL;
 }
 
-// Stat all entries in directory using io_uring
+// Stat all entries in paraller using MAX_IN_FLIGHT size io_uring 
 Directory *scan_directory(Directory *nd) {
-        typedef struct {
-                int idx;
-                struct statx *statxbuf;
-        } statx_job_t;
         assert(nd && nd->magick == 0xDADDAD);
 
         const int MAX_IN_FLIGHT = 32;
-        Entry *parent_entry=nd->parent_entry;
+        struct {
+                int idx;
+                struct statx statxbuf;
+        } statx_jobs[MAX_IN_FLIGHT];
         int entries = nd->entries;
-        struct io_uring ring;  // Use io_uring to stat all entries in parallel
+        struct io_uring ring;
 
-        if (parent_entry->state==ENTRY_FAILED) return NULL;
+        if (nd->parent_entry->state==ENTRY_FAILED) return NULL;
         if (entries==0) return nd; // Empty directory, nothing to do
 
         set_thread_status(dir_path(nd), "io_uring statx");
@@ -493,12 +492,13 @@ Directory *scan_directory(Directory *nd) {
         int in_flight = 0;
         int next_entry = 0;
         int completed = 0;
+        int job=0;
         while (completed < entries) {
                 // Submit jobs while we have slots and entries left
                 for (;in_flight < MAX_IN_FLIGHT && next_entry < entries; next_entry++) {
                         Entry *e = &nd->array[next_entry];
                         if (e->state > ENTRY_INIT) {
-                                completed++;
+                                completed++; // Already done
                                 continue;
                         }
                         struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
@@ -507,24 +507,24 @@ Directory *scan_directory(Directory *nd) {
                                 exit(3); // How can this happen anyway?
                                 continue;
                         }
-                        statx_job_t *job = my_malloc(sizeof(statx_job_t));
-                        job->statxbuf = my_malloc(sizeof(struct statx));
-                        job->idx = next_entry;
-                        io_uring_prep_statx(sqe, nd->fd, e->name, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, job->statxbuf);
-                        sqe->user_data = (uintptr_t)job;
+                        statx_jobs[job].idx = next_entry;
+                        io_uring_prep_statx(sqe, nd->fd, e->name, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &statx_jobs[job].statxbuf);
+                        io_uring_sqe_set_data64(sqe, job);
                         in_flight++;
+                        job++;
                 }
-                if (in_flight > 0) io_uring_submit(&ring);
+                if (in_flight > 0) 
 
-                // Wait for a completion if any jobs are in flight
+                // Submit ring and wait for completions
                 if (in_flight > 0) {
                         struct io_uring_cqe *cqe;
+                        io_uring_submit(&ring);
                         int rc = io_uring_wait_cqe(&ring, &cqe);
                         if (rc < 0) break;
-                        statx_job_t *job = (statx_job_t *)(uintptr_t)cqe->user_data;
-                        int idx = job->idx;
+                        job = cqe->user_data; // Trick: the previous loop uses this job index
+                        int idx = statx_jobs[job].idx;
                         Entry *e = &nd->array[idx];
-                        struct statx *statxbuf = job->statxbuf;
+                        struct statx *statxbuf = &statx_jobs[job].statxbuf;
                         if (cqe->res == 0 && statxbuf) {
                                 // Fill e->_stat from statxbuf (basic fields)
                                 e->_stat.st_mode = statxbuf->stx_mode;
@@ -553,8 +553,6 @@ Directory *scan_directory(Directory *nd) {
                                 errno=-cqe->res;
                                 show_error_dir("statx (io_uring)", nd, e->name);
                         }
-                        free(statxbuf);
-                        free(job);
                         io_uring_cqe_seen(&ring, cqe);
                         completed++;
                         in_flight--;
