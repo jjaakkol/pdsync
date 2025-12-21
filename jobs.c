@@ -271,11 +271,16 @@ void submit_or_run_job(Directory *from, Entry *fentry, Directory *to, const char
                 submit_job(from, fentry, to, target, offset, callback);
                 return;
         }
-        // Run job directly
+        // Run job directly, but need to claim the directories to prevent the directory from being freed while in use
+        // FIXME: is this claim really necessary?
+        if (from) dir_claim(from);
+        if (to) dir_claim(to);
         submit_or_run_job_depth++;
         callback(from , fentry, to, target, offset);
         atomic_fetch_add(&scans.jobs_run, 1);
         submit_or_run_job_depth--;
+        if (from) d_freedir(from);
+        if (to) d_freedir(to);
 }
 
 Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback) {
