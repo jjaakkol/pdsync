@@ -1750,7 +1750,7 @@ int main(int argc, char *argv[]) {
         // Open source and target directories
         int sfd=dir_openat(NULL, argv[optind]);
         if (sfd<0) {
-                fprintf(stderr,"Open source directory'%s': %s", argv[optind], strerror(errno));
+                fprintf(stderr,"Open source directory'%s': %s\n", argv[optind], strerror(errno));
                 exit(1);
         }
         int tfd=dir_openat(NULL, argv[optind+1]);
