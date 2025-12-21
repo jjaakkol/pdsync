@@ -4,7 +4,7 @@ MODTIME = $(shell stat -c "%y" $(SRC))
 MODVERSION = $(shell date -d '$(MODTIME)' "+%Y-%m-%d_%H:%M:%S")
 VERSION=$(REAL_VERSION)-$(MODVERSION)
 CFLAGS = -O2 -g -Wall -DVERSION=\"$(VERSION)\"
-LDFLAGS= -lpthread
+LDFLAGS= -lpthread -luring
 OBJS=dsync.o jobs.o directory.o
 TARGET=pdsync
 
