@@ -1,5 +1,4 @@
 #define _GNU_SOURCE
-
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -7,7 +6,6 @@
 #include <sys/resource.h>
 #include <sys/sysmacros.h>
 #include <liburing.h>
-#include <linux/stat.h>
 
 #include "dsync.h"
 
@@ -465,9 +463,7 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
 }
 
 // Stat all entries in paraller using MAX_IN_FLIGHT size io_uring 
-Directory *scan_directory(Directory *nd) {
-        assert(nd && nd->magick == 0xDADDAD);
-
+Directory *dir_stat_uring(Directory *nd) {
         const int MAX_IN_FLIGHT = 32;
         struct {
                 int idx;
@@ -476,15 +472,7 @@ Directory *scan_directory(Directory *nd) {
         int entries = nd->entries;
         struct io_uring ring;
 
-        if (nd->parent_entry->state==ENTRY_FAILED) return NULL;
-        if (entries==0) return nd; // Empty directory, nothing to do
-
         set_thread_status(dir_path(nd), "io_uring statx");
-
-        if (dir_open(nd)<0) {
-                show_error_dir("stat() files", nd, ".");
-                return NULL;
-        }
 
         int ret = io_uring_queue_init(entries > MAX_IN_FLIGHT ? MAX_IN_FLIGHT : entries, &ring, 0);
         if (ret < 0) {
@@ -498,7 +486,7 @@ Directory *scan_directory(Directory *nd) {
         int in_flight = 0;
         int next_entry = 0;
         int completed = 0;
-        long job=0;
+        int job=0;
         while (completed < entries) {
                 // Submit jobs while we have slots and entries left
                 for (;in_flight < MAX_IN_FLIGHT && next_entry < entries; next_entry++) {
@@ -515,7 +503,7 @@ Directory *scan_directory(Directory *nd) {
                         }
                         statx_jobs[job].idx = next_entry;
                         io_uring_prep_statx(sqe, nd->fd, e->name, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &statx_jobs[job].statxbuf);
-                        io_uring_sqe_set_data(sqe, (void *)job);
+                        io_uring_sqe_set_data64(sqe, job);
                         in_flight++;
                         job++;
                 }
@@ -565,7 +553,28 @@ Directory *scan_directory(Directory *nd) {
                 }
         }
         io_uring_queue_exit(&ring);
-        set_thread_status(dir_path(nd), "io_uring statx done");
+        return nd;
+}
+
+Directory *scan_directory(Directory *nd) {
+        assert(nd && nd->magick == 0xDADDAD);
+
+        if (nd->parent_entry->state==ENTRY_FAILED) return NULL;
+        if (nd->entries==0) return nd; // Empty directory, nothing to do
+
+        if (dir_open(nd)<0) {
+                show_error_dir("stat() files", nd, ".");
+                return NULL;
+        }
+
+        // Initialize with fstatat() all the entries which have not been stated, in readdir() order
+        set_thread_status(dir_path(nd), "stat files");
+        for (int i = 0; i < nd->entries; i++) {
+                Entry *e = &nd->array[i];
+                if (e->state<=ENTRY_INIT) init_entry(e, nd->fd, e->name);
+        }
+
+        set_thread_status(dir_path(nd), "stat done");
         dir_close(nd);
         assert(nd->ref>0);
         return nd;
