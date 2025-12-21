@@ -166,6 +166,7 @@ extern int privacy;
 extern int recursive;
 extern int debug;
 extern int threads;
+extern int use_io_uring;
 extern FILE *tty_stream;
 
 void show_error(const char *why, const char *file);

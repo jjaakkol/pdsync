@@ -553,6 +553,7 @@ Directory *dir_stat_uring(Directory *nd) {
                 }
         }
         io_uring_queue_exit(&ring);
+        set_thread_status(dir_path(nd), "io_uring done");
         return nd;
 }
 
@@ -567,11 +568,17 @@ Directory *scan_directory(Directory *nd) {
                 return NULL;
         }
 
-        // Initialize with fstatat() all the entries which have not been stated, in readdir() order
-        set_thread_status(dir_path(nd), "stat files");
-        for (int i = 0; i < nd->entries; i++) {
-                Entry *e = &nd->array[i];
-                if (e->state<=ENTRY_INIT) init_entry(e, nd->fd, e->name);
+        if (use_io_uring) {
+                Directory *ret=dir_stat_uring(nd);
+                dir_close(nd);
+                return ret;
+        } else {
+                // Initialize with fstatat() all the entries which have not been stated, in readdir() order
+                set_thread_status(dir_path(nd), "stat files");
+                for (int i = 0; i < nd->entries; i++) {
+                        Entry *e = &nd->array[i];
+                        if (e->state<=ENTRY_INIT) init_entry(e, nd->fd, e->name);
+                }
         }
 
         set_thread_status(dir_path(nd), "stat done");

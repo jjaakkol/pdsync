@@ -47,6 +47,7 @@ static int update_all=0;
 static int show_warnings=1;
 static int check=0;
 static int reflink=0;
+int use_io_uring=0;
 int privacy=0;
 int progress=0;
 int threads=4;
@@ -130,7 +131,8 @@ enum {
         CHECK=262,
         STATS=263,
         REFLINK=264,
-        COPY_JOB_SIZE=265
+        COPY_JOB_SIZE=265,
+        USE_IO_URING=267
 };
 
 static struct option options[]= {
@@ -165,6 +167,7 @@ static struct option options[]= {
         { "check",           0, NULL, CHECK },
         { "stats",           0, NULL, STATS },
         { "reflink",         0, NULL, REFLINK },
+        { "io_uring",        0, NULL, USE_IO_URING },
         { NULL, 0, NULL, 0 }
 };
 
@@ -197,6 +200,7 @@ static void show_help() {
                 }
         }
         printf("\n    --copy-job-size <MB>   Set the copy job size in megabytes (default: 1)\n");
+        printf("    --io_uring             Use io_uring for file operations (experimental)\n");
         putchar('\n');
 }
 
@@ -277,8 +281,9 @@ static int parse_options(int argc, char *argv[]) {
 	}
     }
     ostr[j]=0;
-    while( (opt=getopt_long(argc, argv, ostr, options, NULL))>=0 ) {
-	switch(opt) {
+        while( (opt=getopt_long(argc, argv, ostr, options, NULL))>=0 ) {
+        switch(opt) {
+                case USE_IO_URING: use_io_uring=1; break;
 	case 'n': dryrun=1; break;
 	case 'i': itemize++; break;
 	case 'P': 

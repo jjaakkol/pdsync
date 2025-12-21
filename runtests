@@ -2,6 +2,7 @@
 export TIMEFORMAT='%2Rs (%P%% CPU)'
 threads=32
 pdsync_args="--stats --threads=$threads --hard-links --sparse --archive --delete"
+#pdsync_args="--stats --io_uring --threads=$threads --hard-links --sparse --archive --delete"
 
 runtest() {
   expect=$1
