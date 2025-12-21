@@ -458,122 +458,110 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         return NULL;
 }
 
-// FIXME: scan_directory should to be split to smaller jobs or use io_uring
+// Stat all entries in directory using io_uring
 Directory *scan_directory(Directory *nd) {
         typedef struct {
                 int idx;
                 struct statx *statxbuf;
         } statx_job_t;
-
         assert(nd && nd->magick == 0xDADDAD);
+
+        const int MAX_IN_FLIGHT = 32;
         Entry *parent_entry=nd->parent_entry;
+        int entries = nd->entries;
+        struct io_uring ring;  // Use io_uring to stat all entries in parallel
+
         if (parent_entry->state==ENTRY_FAILED) return NULL;
-        if (nd->entries==0) return nd; // Empty directory, nothing to do
+        if (entries==0) return nd; // Empty directory, nothing to do
+
+        set_thread_status(dir_path(nd), "io_uring statx");
 
         if (dir_open(nd)<0) {
                 show_error_dir("stat() files", nd, ".");
                 return NULL;
         }
 
-        set_thread_status(dir_path(nd), "scandir");
+        int ret = io_uring_queue_init(entries > MAX_IN_FLIGHT ? MAX_IN_FLIGHT : entries, &ring, 0);
+        if (ret < 0) {
+                errno=ret;
+                show_error_dir("io_uring_queue_init", nd, ".");
+                dir_close(nd);
+                return NULL;
+        }
 
-                // Use io_uring to stat all entries in parallel
-                struct io_uring ring;
-                int entries = nd->entries;
-                int ret = io_uring_queue_init(entries > 32 ? 32 : entries, &ring, 0);
-                if (ret < 0) {
-                        errno=ret;
-                        show_error_dir("io_uring_queue_init", nd, ".");
-                        dir_close(nd);
-                        return NULL;
-                }
-
-                // Single loop: submit jobs until 32 in flight, then collect completions and submit new jobs as slots free up
-                int in_flight = 0;
-                int next_entry = 0;
-                int completed = 0;
-                while (completed < entries) {
-                        // Submit jobs while we have slots and entries left
-                        while (in_flight < 32 && next_entry < entries) {
-                                Entry *e = &nd->array[next_entry];
-                                if (e->state > ENTRY_INIT) {
-                                        completed++;
-                                        next_entry++;
-                                        continue;
-                                }
-                                struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-                                if (!sqe) {
-                                        show_error_dir("io_uring_get_sqe", nd, e->name);
-                                        next_entry++;
-                                        continue;
-                                }
-                                statx_job_t *job = malloc(sizeof(statx_job_t));
-                                if (!job) {
-                                        show_error_dir("malloc statx_job_t", nd, e->name);
-                                        next_entry++;
-                                        continue;
-                                }
-                                job->statxbuf = malloc(sizeof(struct statx));
-                                if (!job->statxbuf) {
-                                        show_error_dir("malloc statxbuf", nd, e->name);
-                                        free(job);
-                                        next_entry++;
-                                        continue;
-                                }
-                                job->idx = next_entry;
-                                io_uring_prep_statx(sqe, nd->fd, e->name, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, job->statxbuf);
-                                sqe->user_data = (uintptr_t)job;
-                                in_flight++;
-                                next_entry++;
-                        }
-                        if (in_flight > 0) io_uring_submit(&ring);
-
-                        // Wait for a completion if any jobs are in flight
-                        if (in_flight > 0) {
-                                struct io_uring_cqe *cqe;
-                                int rc = io_uring_wait_cqe(&ring, &cqe);
-                                if (rc < 0) break;
-                                statx_job_t *job = (statx_job_t *)(uintptr_t)cqe->user_data;
-                                int idx = job->idx;
-                                Entry *e = &nd->array[idx];
-                                struct statx *statxbuf = job->statxbuf;
-                                if (cqe->res == 0 && statxbuf) {
-                                        // Fill e->_stat from statxbuf (basic fields)
-                                        e->_stat.st_mode = statxbuf->stx_mode;
-                                        e->_stat.st_ino = statxbuf->stx_ino;
-                                        e->_stat.st_nlink = statxbuf->stx_nlink;
-                                        e->_stat.st_uid = statxbuf->stx_uid;
-                                        e->_stat.st_gid = statxbuf->stx_gid;
-                                        e->_stat.st_size = statxbuf->stx_size;
-                                        e->_stat.st_dev = makedev(statxbuf->stx_dev_major, statxbuf->stx_dev_minor);
-                                        e->_stat.st_rdev = makedev(statxbuf->stx_rdev_major, statxbuf->stx_rdev_minor);
-                                        e->_stat.st_blksize = statxbuf->stx_blksize;
-                                        e->_stat.st_blocks = statxbuf->stx_blocks;
-                                        e->_stat.st_mtim.tv_sec = statxbuf->stx_mtime.tv_sec;
-                                        e->_stat.st_mtim.tv_nsec = statxbuf->stx_mtime.tv_nsec;
-                                        e->_stat.st_atim.tv_sec = statxbuf->stx_atime.tv_sec;
-                                        e->_stat.st_atim.tv_nsec = statxbuf->stx_atime.tv_nsec;
-                                        e->_stat.st_ctim.tv_sec = statxbuf->stx_ctime.tv_sec;
-                                        e->_stat.st_ctim.tv_nsec = statxbuf->stx_ctime.tv_nsec;
-                                        e->state = ENTRY_INIT;
-                                } else if (cqe->res == -ENOENT) {
-                                        // File was removed after readdir(), maybe by sync_remove()
-                                        // Ignore this, since if it was us it was intentional and if it was someone else it was intentional too.
-                                        e->state = ENTRY_DELETED;
-                                } else {
-                                        e->state = ENTRY_FAILED;
-                                        errno=-cqe->res;
-                                        show_error_dir("statx (io_uring)", nd, e->name);
-                                }
-                                free(statxbuf);
-                                free(job);
-                                io_uring_cqe_seen(&ring, cqe);
+        // Single loop: submit jobs until MAX_IN_FLIGHT in flight, then collect completions and submit new jobs as slots free up
+        int in_flight = 0;
+        int next_entry = 0;
+        int completed = 0;
+        while (completed < entries) {
+                // Submit jobs while we have slots and entries left
+                for (;in_flight < MAX_IN_FLIGHT && next_entry < entries; next_entry++) {
+                        Entry *e = &nd->array[next_entry];
+                        if (e->state > ENTRY_INIT) {
                                 completed++;
-                                in_flight--;
+                                continue;
                         }
+                        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+                        if (!sqe) {     
+                                show_error_dir("io_uring_get_sqe", nd, e->name);
+                                exit(3); // How can this happen anyway?
+                                continue;
+                        }
+                        statx_job_t *job = my_malloc(sizeof(statx_job_t));
+                        job->statxbuf = my_malloc(sizeof(struct statx));
+                        job->idx = next_entry;
+                        io_uring_prep_statx(sqe, nd->fd, e->name, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, job->statxbuf);
+                        sqe->user_data = (uintptr_t)job;
+                        in_flight++;
                 }
-                io_uring_queue_exit(&ring);
-        set_thread_status(dir_path(nd), "scandir done");
+                if (in_flight > 0) io_uring_submit(&ring);
+
+                // Wait for a completion if any jobs are in flight
+                if (in_flight > 0) {
+                        struct io_uring_cqe *cqe;
+                        int rc = io_uring_wait_cqe(&ring, &cqe);
+                        if (rc < 0) break;
+                        statx_job_t *job = (statx_job_t *)(uintptr_t)cqe->user_data;
+                        int idx = job->idx;
+                        Entry *e = &nd->array[idx];
+                        struct statx *statxbuf = job->statxbuf;
+                        if (cqe->res == 0 && statxbuf) {
+                                // Fill e->_stat from statxbuf (basic fields)
+                                e->_stat.st_mode = statxbuf->stx_mode;
+                                e->_stat.st_ino = statxbuf->stx_ino;
+                                e->_stat.st_nlink = statxbuf->stx_nlink;
+                                e->_stat.st_uid = statxbuf->stx_uid;
+                                e->_stat.st_gid = statxbuf->stx_gid;
+                                e->_stat.st_size = statxbuf->stx_size;
+                                e->_stat.st_dev = makedev(statxbuf->stx_dev_major, statxbuf->stx_dev_minor);
+                                e->_stat.st_rdev = makedev(statxbuf->stx_rdev_major, statxbuf->stx_rdev_minor);
+                                e->_stat.st_blksize = statxbuf->stx_blksize;
+                                e->_stat.st_blocks = statxbuf->stx_blocks;
+                                e->_stat.st_mtim.tv_sec = statxbuf->stx_mtime.tv_sec;
+                                e->_stat.st_mtim.tv_nsec = statxbuf->stx_mtime.tv_nsec;
+                                e->_stat.st_atim.tv_sec = statxbuf->stx_atime.tv_sec;
+                                e->_stat.st_atim.tv_nsec = statxbuf->stx_atime.tv_nsec;
+                                e->_stat.st_ctim.tv_sec = statxbuf->stx_ctime.tv_sec;
+                                e->_stat.st_ctim.tv_nsec = statxbuf->stx_ctime.tv_nsec;
+                                e->state = ENTRY_INIT;
+                        } else if (cqe->res == -ENOENT) {
+                                // File was removed after readdir(), maybe by sync_remove()
+                                // Ignore this, since if it was us it was intentional and if it was someone else it was intentional too.
+                                e->state = ENTRY_DELETED;
+                        } else {
+                                e->state = ENTRY_FAILED;
+                                errno=-cqe->res;
+                                show_error_dir("statx (io_uring)", nd, e->name);
+                        }
+                        free(statxbuf);
+                        free(job);
+                        io_uring_cqe_seen(&ring, cqe);
+                        completed++;
+                        in_flight--;
+                }
+        }
+        io_uring_queue_exit(&ring);
+        set_thread_status(dir_path(nd), "io_uring statx done");
         dir_close(nd);
         assert(nd->ref>0);
         return nd;
