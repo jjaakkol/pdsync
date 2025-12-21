@@ -17,6 +17,7 @@ runtest() {
  	echo "#### CRASH. exiting"
         exit 1
   fi
+  echo "### Finished ret=$ret. syncing."
   sync
 }
 
