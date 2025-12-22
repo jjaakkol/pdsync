@@ -1294,10 +1294,8 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 if (preserve_time) tmp[1]=entry_stat(fentry)->st_mtim;
 
                 if (
-                        to_stat.st_atim.tv_sec == tmp[0].tv_sec &&
-                        to_stat.st_atim.tv_nsec == tmp[0].tv_nsec &&
-                        to_stat.st_mtim.tv_sec == tmp[1].tv_sec &&
-                        to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec 
+                        (!atime_preserve || (to_stat.st_atim.tv_sec == tmp[0].tv_sec && to_stat.st_atim.tv_nsec == tmp[0].tv_nsec)) &&
+                        (!preserve_time || (to_stat.st_mtim.tv_sec == tmp[1].tv_sec && to_stat.st_mtim.tv_nsec == tmp[1].tv_nsec))
                 ) {
                         /* skip, times were right */
                 } else if (!dryrun && utimensat(dfd, target, tmp, AT_SYMLINK_NOFOLLOW)<0) {
