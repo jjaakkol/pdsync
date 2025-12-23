@@ -272,6 +272,9 @@ static int dir_open_locked(Directory *d)
                         d->parent_entry->_stat=s;
                 } else if (dir_stat(d)->st_ino != s.st_ino || dir_stat(d)->st_dev != s.st_dev) {
                         // Directory has changed under us!
+                        fprintf(stderr, "Directory inode or dev changed: was %lu:%lu now %lu:%lu\n",
+                                (unsigned long)dir_stat(d)->st_dev, (unsigned long)dir_stat(d)->st_ino,
+                                (unsigned long)s.st_dev, (unsigned long)s.st_ino);
                         show_error_dir("Directory inode or dev changed", d, ".");
                         close(fd);
                         return -1;
