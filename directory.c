@@ -507,14 +507,22 @@ Directory *dir_stat_uring(Directory *nd) {
                         in_flight++;
                         job++;
                 }
-                if (in_flight > 0) 
 
                 // Submit ring and wait for completions
                 if (in_flight > 0) {
                         struct io_uring_cqe *cqe;
-                        io_uring_submit(&ring);
-                        int rc = io_uring_wait_cqe(&ring, &cqe);
-                        if (rc < 0) break;
+                        int rc=io_uring_submit(&ring);
+                        if (rc < 0) {
+                                errno=rc;
+                                show_error_dir("io_uring_submit", nd, ".");
+                                exit(4);
+                        }
+                        rc = io_uring_wait_cqe(&ring, &cqe);
+                        if (rc < 0) {
+                                errno=rc;
+                                show_error_dir("io_uring_wait_cqe", nd, ".");
+                                exit(4);
+                        }
                         job = cqe->user_data; // Trick: the previous loop uses this job index
                         int idx = statx_jobs[job].idx;
                         Entry *e = &nd->array[idx];
