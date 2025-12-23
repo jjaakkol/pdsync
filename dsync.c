@@ -576,18 +576,21 @@ int unlink_file(Directory *parent, const char *name) {
         assert(delete);
         int ret=0;
 
-        int dfd=dir_open(parent);
-        if (!dryrun && unlinkat(dfd, name, 0)) {
-                // If some other thread or someone just removed the file, it's ok
-                if (errno!=ENOENT) {
-                        write_error("unlinkat()", parent, name);
-                        ret=-1;
+        if (!dryrun) {
+                int dfd=dir_open(parent);
+                if (unlinkat(dfd, name, 0)) {
+                        // If some other thread or someone just removed the file, it's ok
+                        if (errno!=ENOENT) {
+                                write_error("unlinkat()", parent, name);
+                                ret=-1;
+                        }
                 }
-        } else  {
+                dir_close(parent);
+        }
+        if (ret==0) {
                 item("rm -f", parent,name);
                 opers.entries_removed++;
         }
-        dir_close(parent);
         return ret;
 }
 
@@ -1228,9 +1231,13 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         /* Lookup the current inode state. It might have changed during copying and file creation. */
         struct stat to_stat;
         if (fstatat(dfd, target, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
-                write_error("sync_metadata can't stat target (fstatat)", to, target);
-                goto fail;
-        }
+                if (!dryrun) {
+                        write_error("sync_metadata can't stat target (fstatat)", to, target);
+                        goto fail;
+                } else {
+                        memset(&to_stat, 0, sizeof(to_stat)); // Set it to zeroes so that all metadata is applied
+                }
+       }
 
         /* Check if we need to update UID and GID */
         uid_t uid=-1;
