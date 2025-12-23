@@ -173,6 +173,8 @@ static struct option options[]= {
 
 JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t offset);
 JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const char *target, off_t offset);
+int entry_changed(Entry *from, Entry *to);
+JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset);
 
 #ifndef VERSION
         #define VERSION "1.9-build"
@@ -1084,10 +1086,15 @@ int check_hard_link(Directory *from, Entry *fentry, Directory *to, Entry *tentry
         pthread_mutex_lock(&link_htable_mutex);
         Link *l = lookup_hard_link(entry_stat(fentry)->st_dev, entry_stat(fentry)->st_ino);
         if (!l) {
-                // We haven't seen this hard link yet. Save it in hash table.
+                // We haven't seen this hard link yet. Create the target file and save it to hash table
                 struct stat stat;
-                if (!tentry || !S_ISREG(entry_stat(tentry)->st_mode)) {
+                if (!tentry || entry_changed(fentry, tentry) ) {
                         // The hard link target file has not yet been created. Create it now.
+                        if (!delete) {
+                                write_error("Hard link target exists and delete not enabled", to, fentry->name);
+                                return 1;
+                        }
+                        unlink_file(to, fentry->name);
                         copy_regular(from, fentry, to, fentry->name, -1);
                         if (file_stat(to, fentry->name, &stat) <0 ) {
                                 write_error("hard link target creation", to, fentry->name);
@@ -1447,8 +1454,6 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         goto out;
 }
 
-JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t offset);
-
 JobResult sync_remove(Directory *from, Entry *parent_fentry, Directory *to, const char *target, off_t depth) {
         // If --delete clear out target directory of files which do not exist in from
         if (delete) {
@@ -1669,12 +1674,6 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	        /* Lookup the existing file */
 	        if (to) tentry=directory_lookup(to,todir+tolen+1);
 
-                // Check if we should just make a hard link
-                if (check_hard_link(from, fentry, to, tentry)) {
-                        // Hard link was created. Continue
-                        continue;
-                }
-
                 // Check for filetype mismatch between source and existing target
                 if (tentry) {
                         mode_t fentry_type = entry_stat(fentry)->st_mode & S_IFMT;
@@ -1696,11 +1695,26 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                         }
                 }
 
+                // Check if we should just make a hard link
+                if (check_hard_link(from, fentry, to, tentry)) {
+                        // Hard link was created. Continue
+                        continue;
+                }
+
 	        // Check if the already existing target entry: keep it, update it or remove it
 	        if (tentry) {
                         if (entry_changed(fentry, tentry)) {
-                                // Target entry existed, but something is changed
+                                // Target entry exists, but needs to be updated
                                 if (S_ISREG((entry_stat(tentry)->st_mode))) {
+                                        if (entry_stat(tentry)->st_nlink > 1) {
+                                                // Target is a hard link, we can't update it safely
+                                                if (delete) {
+                                                        unlink_entry(to, tentry);
+                                                } else {
+                                                        write_error("Target file has hard links, can't update it safely. Consider --delete", to, tentry->name);
+                                                        continue;
+                                                }
+                                        }
                                         // FIXME: do this in copy_regular: Updating an existing file
                                         atomic_fetch_add(&opers.files_updated,1);
                                 }
