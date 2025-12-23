@@ -1,0 +1,9 @@
+#!/bin/bash
+mkdir -vp dsync-test/hardlinks1 dsync-test/hardlinks2
+cd dsync-test
+echo hello > hardlinks1/file1
+echo hello again > hardlinks2/file1
+ln -fv hardlinks1/file1 hardlinks1/file2
+ln -fv hardlinks2/file1 hardlinks2/file2
+
+

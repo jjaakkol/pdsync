@@ -22,8 +22,19 @@ runtest() {
   sync
 }
 
+
+echo "# Clearing dsync-target"
+mkdir -p dsync-target/removeme
+runtest 1 ./pdsync  $pdsync_args dsync-test/emptydir dsync-target
+
+echo "# hard link tests"
+runtest 1 ./pdsync -i --stats $pdsync_args dsync-test/hardlinks1 dsync-target
+runtest 0 ./pdsync -i --stats $pdsync_args dsync-test/hardlinks1 dsync-target
+runtest 2 ./pdsync -i --archive dsync-test/hardlinks2 dsync-target
+runtest 1 ./pdsync -i $pdsync_args dsync-test/hardlinks2 dsync-target
+
 echo "# short sanity tests"
-touch dsync-target/removed
+touch dsync-target/removeme
 runtest 1 ./pdsync -i $pdsync_args dsync-test/dir-is-in-the-way dsync-target
 runtest 2 ./pdsync -i --archive dsync-test/symlinks dsync-target
 runtest 1 ./pdsync -i $pdsync_args dsync-test/symlinks dsync-target
