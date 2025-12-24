@@ -17,6 +17,7 @@
  */
 
 #include "dsync.h"
+#include <stdarg.h>
 #include <sys/mman.h>
 #include <sys/xattr.h>
 #include <sys/ioctl.h>
@@ -239,19 +240,21 @@ static void show_warning(const char *why, const char *file) {
     }
 }
 
-// Write a item a shell executable command about what was done
-static void item(const char *i, const Directory *d, const char *name ) {
-        FILE *stream=stdout;
+// write an --itemize line
+void itemf(const char *fmt, ...) __attribute__ ((format(printf,1,2)));
+void itemf(const char *fmt, ...) {
+        va_list args;
         atomic_fetch_add(&opers.items,1);
-        if (!itemize) return;
-        fprintf(stream,"%s: %s%s\n",i,dir_path(d),name);
+        if (itemize<1) return;
+        va_start(args, fmt);
+        vfprintf(stdout, fmt, args);
+        va_end(args);
 }
 
 // it itemize>1 we write an entry of skipped items
 static void item2(const char *i, const Directory *d, const char *name ) {
-        FILE *stream=stdout;
         if (itemize<2) return;
-        fprintf(stream,"# %s: %s%s\n",i,dir_path(d),name);
+        itemf("# %s: %s%s\n",i,dir_path(d),name);
 }
 
 
@@ -573,7 +576,6 @@ void print_progress() {
 
 // Unlink one target entry, which is not a directory
 int unlink_file(Directory *parent, const char *name) {
-        assert(delete);
         int ret=0;
 
         if (!dryrun) {
@@ -588,7 +590,7 @@ int unlink_file(Directory *parent, const char *name) {
                 dir_close(parent);
         }
         if (ret==0) {
-                item("rm -f", parent,name);
+                itemf("rm -f %s\n", file_path(parent, name));
                 opers.entries_removed++;
         }
         return ret;
@@ -610,7 +612,7 @@ JobResult remove_directory(Directory *ignored, Entry *tentry, Directory *del, co
                         goto fail; 
                 }
         }
-        item("rmdir", tentry->dir, tentry->name);
+        itemf("rmdir %s\n", file_path(tentry->dir, tentry->name));
         opers.dirs_removed++;
         fail:
         if (dfd>=0) dir_close(del->parent);
@@ -685,7 +687,7 @@ int immediately_remove_hierarchy(Directory *to, Entry *entry) {
                 dir_close(to);
                 return -1;
         }
-        item("mv", to, tmpname);
+        itemf("mv %s %s\n", file_path(to, entry->name), file_path(to, tmpname));
         // FIXME: this leaks tmp_entry worth of memory
         Entry *tmp_entry=my_malloc(sizeof(Entry));
         *tmp_entry=*entry;
@@ -876,7 +878,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
         if (dryrun) {
-                item("CP",to,target);
+                itemf("cp %s %s\n", file_path(from, source), file_path(to, target));
                 opers.bytes_copied+=entry_stat(fentry)->st_size;
                 sync_metadata(from, fentry, to, target, 0);
                 return 0;
@@ -907,7 +909,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
                         int rc = ioctl(tofd, FICLONE, fromfd);
                         if (rc == 0) {
                                 /* Cloned successfully */
-                                item("cp --reflink", to, target);
+                                itemf("cp --reflink %s %s\n", file_path(from, source), file_path(to, target));
                                 atomic_fetch_add(&opers.files_reflinked, 1);
                                 offset=0;
                                 num_jobs=1;
@@ -975,7 +977,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
 
         if (offset/copy_job_size == num_jobs-1) {
                 // This is the last job. Show copy done, even if some copy jobs might be still running
-                item("CP",to,target);
+                itemf("cp %s %s\n", file_path(from, source), file_path(to, target));
                 opers.files_copied++;
         }
 
@@ -996,7 +998,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         return ret;
 
         fail:
-        item("# cp failed", to, target);
+        item2("# cp failed", to, target);
         fentry->state=ENTRY_FAILED;
         ret = RET_FAILED;
         goto end;
@@ -1007,8 +1009,7 @@ static int should_exclude(const Directory *from, const Entry *entry) {
 
     while(e) {
 	if (regexec(&e->regex,entry->name,0,NULL,0)==0) {
-	    /* Matched */
-            if (itemize>1) item("EX",from,entry->name);
+	    item2("excluded", from, entry->name);
 	    return 1;
 	}
 	e=e->next;
@@ -1055,8 +1056,9 @@ JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const 
                         item2("# Something is in the way: can't create hardlink", to, target);
                         goto out;
                 }
-                if (unlinkat(to_dfd, target, 0)<0) goto write_error;
-                item("rm -f", to, target);
+                if (unlink_file(to, target)<0) {
+                        goto write_error;
+                }
         }
 
         // Now create the hard link
@@ -1064,7 +1066,7 @@ JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const 
         {
                 goto write_error;
         } else {
-                if (itemize) printf("ln %s %s\n", l->target_path, file_path(to, target));
+                itemf("ln %s %s\n", l->target_path, file_path(to, target));
                 opers.hard_links_created++;
         }
 
@@ -1260,7 +1262,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                                 write_error("fchownat()", to, target);
                         }
                 } else {
-                        item("chown", to, target);
+                        itemf("chown %d:%d %s\n", uid, gid, file_path(to, target));
                         atomic_fetch_add(&opers.chown,1);
                 }
         }
@@ -1273,6 +1275,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 // Masked mode bits
                 mode_t masked_mode = entry_stat(fentry)->st_mode & (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
 
+                // FIXME: check this logic and rewrite
                 if (!dryrun && fchmodat(dfd, target, masked_mode, AT_SYMLINK_NOFOLLOW)) {
                         // fchmodat() failed: it can fail with ENOTSUPPORTED. Try again with fchmod()
                         int chmodfd = -1;
@@ -1282,7 +1285,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         } else if ((chmodfd = openat(dfd, target, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)) >= 0 &&
                                    fchmod(chmodfd, masked_mode) == 0) {
                                 /* Second attempt succeeded via fd-based fchmod(). */
-                                item("chmod", to, target);
+                                itemf("chmod %o %s\n", masked_mode, file_path(to, target));
                                 atomic_fetch_add(&opers.chmod, 1);
                         } else {
                                 write_error("fchmodat()", to, target);
@@ -1290,7 +1293,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         }
                         if (chmodfd >= 0) close(chmodfd);
                 } else {
-                        item("chmod", to, target);
+                        itemf("chmod %o %s\n", masked_mode, file_path(to, target));
                         atomic_fetch_add(&opers.chmod,1);
                 }
         }
@@ -1321,7 +1324,18 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                                 ret=-1;
                         }
                 } else {
-                        if (itemize) item("touch", to, target);
+                        char timebuf[64];
+                        struct tm tm_time;
+                        if (preserve_time) {
+                                localtime_r(&entry_stat(fentry)->st_mtime, &tm_time);
+                                strftime(timebuf, sizeof(timebuf), "%Y%m%d%H%M.%S", &tm_time);
+                                itemf("touch --time=mtime -t %s %s\n", timebuf, file_path(to, target));
+                        }
+                        if (atime_preserve) {
+                                localtime_r(&entry_stat(fentry)->st_atime, &tm_time);
+                                strftime(timebuf, sizeof(timebuf), "%Y%m%d%H%M.%S", &tm_time);
+                                itemf("touch --time=atime -t %s %s\n", timebuf, file_path(to, target));
+                        }
                         atomic_fetch_add(&opers.times,1);
                 }
         }
@@ -1338,7 +1352,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                         }
                         close(fd);
                 }
-                item("TAG", to, target);
+                itemf("setfattr -n %s -v %s %s\n", sync_tag_name, sync_tag, file_path(to, target));
                 atomic_fetch_add(&opers.sync_tags,1);
         }
         
@@ -1380,11 +1394,13 @@ int create_symlink(Directory *from, Entry *fentry, Directory *to, const char *ta
                 } else if(source_link_len != link_len || memcmp(linkbuf, source_linkbuf, link_len) != 0) {
                         // Link target differs, remove and update
                         source_linkbuf[source_link_len] = '\0';
-                        if (unlink_file(to, target)==0 && !dryrun && symlinkat(source_linkbuf, tofd, target)==0) {
-                                item("ln -s", to, target);
-                                atomic_fetch_add(&opers.symlinks_created, 1);
-                        } else {
-                                write_error(source_linkbuf, to, target);
+                        if (unlink_file(to,target)==0) {
+                                if (dryrun || symlinkat(source_linkbuf, tofd, target)==0) {
+                                        itemf("ln -s %s %s\n", source_linkbuf, file_path(to, target));
+                                        atomic_fetch_add(&opers.symlinks_created, 1);
+                                } else {
+                                        write_error("symlink", to, target);
+                                }
                         }
                 } else {
                         /* Link target is the same, nothing to do */
@@ -1434,7 +1450,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                         goto fail;
 	        } else  {
                         atomic_fetch_add(&opers.fifos_created, 1);
-                        item("mkfifo" ,to,target);
+                        itemf("mkfifo %s\n", file_path(to, target));
                 }
 
         // Don't bother with device special files 
@@ -1493,7 +1509,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                         char buf[256];
                         size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
                         if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
-                                if (itemize>1) item("# tagged", to_parent, target);
+                                item2("# tagged", to_parent, target);
                                 scans.dirs_skipped++;
                                 close(fd);
                                 goto fail;
@@ -1543,7 +1559,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                 goto fail;
                         } else {
                                 atomic_fetch_add(&opers.dirs_created, 1);
-                                item("mkdir", to_parent, target);
+                                itemf("mkdir %s\n", file_path(to_parent, target));
                         }
                 }
 
@@ -1561,8 +1577,8 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         }
         to=read_directory(to_parent, parent_tentry);
         if (!to) {
-                read_error("read_directory", to_parent, parent_tentry->name);
-                item("# directory read failed", to_parent, target);
+                read_error("read_target directory", to_parent, parent_tentry->name);
+                item2("# directory read failed", to_parent, target);
                 goto fail;
         }
         assert(parent_tentry->dir);
@@ -1581,7 +1597,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                         init_entry(fentry, dfd, target);
                                 } else {
                                         read_error("dir_open", from, fentry->name);
-                                        item("# directory open failed", from, fentry->name);
+                                        item2("# directory open failed", from, fentry->name);
                                         opers.read_errors++;
                                         continue;
                                 }
@@ -1645,7 +1661,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
         from=scan_directory(from);
         if (from==NULL) {
                 read_error("scan_directory", from, ".");
-                item("# source directory scan failed", from, ".");
+                item2("# source directory scan failed", from, ".");
 	        opers.read_errors++;
                 return RET_FAILED;
         }
@@ -1653,7 +1669,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
         to=scan_directory(to);
         if (to==NULL) {
                 read_error("scan_directory", to, ".");
-                item("# targetdirectory scan failed", to, ".");
+                item2("# target directory scan failed", to, ".");
                 return RET_FAILED;
         }
 
@@ -1663,7 +1679,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	        Entry *tentry=NULL;
 
                 if (fentry->state == ENTRY_FAILED) {
-                        item("# File has gone away\n", from, fentry->name);
+                        item2("# File has gone away\n", from, fentry->name);
                         atomic_fetch_add(&opers.read_errors, 1);
                         continue;
                 }
