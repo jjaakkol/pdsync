@@ -1,0 +1,58 @@
+# Running test expecting 1: ./pdsync -i --dry-run --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/dir-is-in-the-way dsync-target
+rm -f /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+mkdir /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2
+rm -f /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+mkdir /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1
+rm -f /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+mkdir /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1
+rm -f /home/jjaakkol/git/pdsync/dsync-target/kaksi
+mkdir /home/jjaakkol/git/pdsync/dsync-target/kaksi
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/yksi
+rm -f /home/jjaakkol/git/pdsync/dsync-target/kolme
+ln -s symlink2 /home/jjaakkol/git/pdsync/dsync-target/kolme
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/kolme
+cp /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/linux-6.15.2/file-is-in-the-way-too /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/linux-6.15.2/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+chmod 644 /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+cp /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/testdir-15-1/file-is-in-the-way-too /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/testdir-15-1/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+chmod 644 /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/yksi
+cp /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/testdir-25-1/file-is-in-the-way-too /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/testdir-25-1/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+chmod 644 /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/.
+chmod 755 /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/.
+touch --time=mtime -t 202512181703.39 /home/jjaakkol/git/pdsync/dsync-target/testdir-25-1/.
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/kolme
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/file-is-in-the-way-too
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/.
+chmod 755 /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/.
+touch --time=mtime -t 202512181703.39 /home/jjaakkol/git/pdsync/dsync-target/linux-6.15.2/.
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/.
+chmod 755 /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/.
+touch --time=mtime -t 202512181703.39 /home/jjaakkol/git/pdsync/dsync-target/testdir-15-1/.
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/.
+chmod 755 /home/jjaakkol/git/pdsync/dsync-target/.
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/.
+cp /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/kaksi/file-is-in-the-way-too /home/jjaakkol/git/pdsync/dsync-test/dir-is-in-the-way/kaksi/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/kaksi/file-is-in-the-way-too
+chmod 644 /home/jjaakkol/git/pdsync/dsync-target/kaksi/file-is-in-the-way-too
+touch --time=mtime -t 202512182325.00 /home/jjaakkol/git/pdsync/dsync-target/kaksi/file-is-in-the-way-too
+chown -1:3000000 /home/jjaakkol/git/pdsync/dsync-target/kaksi/.
+chmod 755 /home/jjaakkol/git/pdsync/dsync-target/kaksi/.
+touch --time=mtime -t 202512182320.19 /home/jjaakkol/git/pdsync/dsync-target/kaksi/.
+#  ./pdsync -i --dry-run --stats --threads=32 --hard-links --sparse --archive --delete dsync-test/dir-is-in-the-way dsync-target
+Walltime 00:00:01.164, CPUtime 00:00:00.005 (0.5%)
+       4 directories created
+       5 entries removed
+     28B bytes copied,    24B/s
+      0B bytes checked,     0B/s
+       1 symlinks created
+      11 file owner/group changed
+       9 file chmod bits changed
+      11 file atime/mtime changed
+# Pdsync 1.9-2025-12-29_10:17:21 finished at 2025-12-29 10:18:12 with status 1
+### Finished ret=1. syncing.

@@ -38,8 +38,9 @@ touch dsync-target/removeme
 runtest 1 ./pdsync -i $pdsync_args dsync-test/dir-is-in-the-way dsync-target
 runtest 2 ./pdsync -i --archive dsync-test/symlinks dsync-target
 runtest 1 ./pdsync -i $pdsync_args dsync-test/symlinks dsync-target
-runtest 1 ./pdsync -i $pdsync_args dsync-test/dir-is-in-the-way dsync-target
-echo "# pdsync short test"
+runtest 1 ./pdsync -i --dry-run $pdsync_args dsync-test/dir-is-in-the-way dsync-target > dryrun-output.txt
+
+echo "# pdsync linux source test"
 runtest 1 ./pdsync $pdsync_args dsync-test/linux-* dsync-target
 echo "# pdsync verify. No output."
 runtest 0 ./pdsync -i $pdsync_args dsync-test/linux-* dsync-target
@@ -47,6 +48,7 @@ echo "# rsync verify. No output."
 runtest 0 rsync -i --archive --hard-links --delete dsync-test/linux-*/. dsync-target/.
 echo "# pdsync delete test"
 runtest 1 ./pdsync $pdsync_args dsync-test/emptydir/. dsync-target/.
+
 echo "# pdsync long test."
 runtest 1 ./pdsync -P $pdsync_args dsync-test dsync-target
 echo "# pdsync verify test. No output."
