@@ -38,6 +38,7 @@ touch dsync-target/removeme
 runtest 1 ./pdsync -i $pdsync_args dsync-test/dir-is-in-the-way dsync-target
 runtest 2 ./pdsync -i --archive dsync-test/symlinks dsync-target
 runtest 1 ./pdsync -i $pdsync_args dsync-test/symlinks dsync-target
+echo "# --dry-run test"
 runtest 1 ./pdsync -i --dry-run $pdsync_args dsync-test/dir-is-in-the-way dsync-target > dryrun-output.txt
 
 echo "# pdsync linux source test"
