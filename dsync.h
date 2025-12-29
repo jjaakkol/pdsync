@@ -47,7 +47,7 @@ typedef struct
 } Entry;
 
 #define DIR_MAGICK 0xDADDAD
-#define DIR_ZOMBIE 0xDADDEAD
+
 // We keep the fd's of directories in a LRU cache to avoid closing and opening needlessly
 // We use openat() always to open files
 typedef struct DirectoryStruct
@@ -58,7 +58,7 @@ typedef struct DirectoryStruct
         struct DirectoryStruct *lru_prev; // The LRU list
         struct DirectoryStruct *lru_next;
         struct DirectoryStruct *parent;
-        Entry *parent_entry;
+        struct stat _stat;
         char *name;
         int entries;
         atomic_int descendants; // Total number of known descendants, which grows while they are being scanned. */
@@ -200,7 +200,7 @@ int print_jobs(FILE *f);
 // Interface to directory.c
 Entry *directory_lookup(const Directory *d, const char *name);
 Directory *scan_directory(Directory *dir);
-Directory *read_directory(Directory *parent, Entry *parent_entry);
+Directory *read_directory(Directory *parent, const char *name);
 Entry *init_entry(Entry *entry, int dfd, char *name);
 void d_freedir(Directory *dir);
 const char *dir_path(const Directory *d);
@@ -216,6 +216,12 @@ int file_stat(Directory *d, const char *name, struct stat *s);
                                         (FD)>=0 || ((FD)==-1 && read_error("opendir", (DIR), ".") && 0); \
                                         dir_close(DIR), FD=-2) 
 
+static inline void dir_assert(const Directory *d) {
+        if (!d) return;
+        assert(d->magick==DIR_MAGICK);
+        assert(d->ref>0);
+}
+
 static inline Entry *dir_entry(Directory *d, int i) {
         Entry *e=&d->array[i];
         return e;
@@ -230,7 +236,7 @@ static inline const struct stat *entry_stat(const Entry *e)
 }
 static inline const struct stat *dir_stat(const Directory *d)
 {
-        return entry_stat(d->parent_entry);
+        return &d->_stat;
 }
 static inline int entry_isdir(Entry *e)
 {

@@ -601,33 +601,39 @@ int unlink_entry(Directory *parent, Entry *e) {
         return unlink_file(parent, e->name);
 }
 
-JobResult remove_directory(Directory *ignored, Entry *tentry, Directory *del, const char *not_used, off_t depth) {
-        assert(tentry->dir && del==tentry->dir);
-        set_thread_status(file_path(tentry->dir, tentry->name), "rmdir");
+JobResult remove_directory(Directory *ignored, Entry *ignored2, Directory *del, const char *target, off_t depth) {
+        dir_assert(del);
+        assert(target);
+        assert(ignored==NULL && ignored2==NULL);
+
+        set_thread_status(file_path(del, target), "rmdir");
         int ret=0;
         int dfd=-1;
         if (!dryrun) {
-                if ( (dfd=dir_open(del->parent))<0 || unlinkat(dfd, tentry->name, AT_REMOVEDIR )<0) {
-	                write_error("rmdir", tentry->dir, tentry->name);
+                if ( (dfd=dir_open(del->parent))<0 || unlinkat(dfd, target, AT_REMOVEDIR )<0) {
+	                write_error("rmdir", del->parent, target);
                         goto fail; 
                 }
         }
-        itemf("rmdir %s\n", file_path(tentry->dir, tentry->name));
+        itemf("rmdir %s\n", file_path(del->parent, target));
         opers.dirs_removed++;
         fail:
         if (dfd>=0) dir_close(del->parent);
         return ret;
 }
 
-JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, const char *ignored_too, off_t depth) {
+JobResult remove_hierarchy(Directory *ignored, Entry *ignored2, Directory *to, const char *name, off_t depth) {
+        dir_assert(to);
+        assert(name);
+        assert(ignored==NULL && ignored2==NULL);
+
         struct stat thisdir;
         Directory *del=NULL;
-        int i;
- 
-        // We only read_directory. fstat of the removed inodes is not
-        del=read_directory(to, tentry);
+
+        // We only read_directory. fstat of the removed inodes is not needed
+        del=read_directory(to, name);
         if (!del) {
-                write_error("read_directory", to, tentry->name);
+                write_error("read_directory", to, name);
                 goto fail;
         }
         int dfd=dir_open(del);
@@ -637,25 +643,25 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         	thisdir.st_ino==source_stat.st_ino) {
         	/* This can happen when doing something like 
 	        * dsync /tmp/foo/bar /tmp/foo */
-        	show_warning("Skipping removal of source directory", file_path(to, tentry->name));
+                show_warning("Skipping removal of source directory", file_path(to, name));
 	        goto fail;
         }
         if (thisdir.st_dev==target_root.stat.st_dev &&
 	        thisdir.st_ino==target_root.stat.st_ino) {
 	        /* This should only happen on badly screwed up filesystems */
-	        show_warning("Skipping removal of target directory (broken filesystem?).\n", file_path(to, tentry->name));
+	        show_warning("Skipping removal of target directory (broken filesystem?).\n", file_path(to, name));
 	        goto fail;
         }
   
-        for(i=0;i<del->entries;i++) {
+        for(int i=0;i<del->entries;i++) {
                 set_thread_status(file_path(to, del->array[i].name), "unlinking");
                 if (entry_isdir_i(del, i)) {
-                        submit_job_first(NULL, &del->array[i], del, NULL, depth+1, remove_hierarchy);
+                        submit_job_first(NULL, NULL, del, del->array[i].name, depth+1, remove_hierarchy);
                 } else if ( unlink_entry(del, dir_entry(del, i)) ) {
                         goto fail; 
                 }
 	}
-        submit_job(NULL, tentry, del, ".", DSYNC_DIR_WAIT, remove_directory); // del is freed by remove_directory()
+        submit_job(NULL, NULL, del, name, DSYNC_DIR_WAIT, remove_directory); // del is freed by remove_directory()
         int ret=0;
 
  cleanup:
@@ -665,7 +671,7 @@ JobResult remove_hierarchy(Directory *ignored, Entry *tentry, Directory *to, con
         return ret;
 
  fail:
-        write_error("remove_hierarchy", to, tentry->name);
+        write_error("remove_hierarchy", to, name);
         ret=-1;
         goto cleanup;
 }
@@ -688,11 +694,8 @@ int immediately_remove_hierarchy(Directory *to, Entry *entry) {
                 return -1;
         }
         itemf("mv %s %s\n", file_path(to, entry->name), file_path(to, tmpname));
-        // FIXME: this leaks tmp_entry worth of memory
-        Entry *tmp_entry=my_malloc(sizeof(Entry));
-        *tmp_entry=*entry;
-        tmp_entry->name=my_strdup(tmpname);
-        submit_job_first(NULL, tmp_entry, to, NULL, 0, remove_hierarchy);
+        // FIXME: tmpname is leaked here
+        submit_job_first(NULL, NULL, to, my_strdup(tmpname), 0, remove_hierarchy);
         dir_close(to);
         return 0;
 }
@@ -1495,7 +1498,7 @@ JobResult sync_remove(Directory *from, Entry *parent_fentry, Directory *to, cons
                 for(int to_i=0; to && to_i < to->entries; to_i++) {
 	                if ( directory_lookup(from,to->array[to_i].name)==NULL) {
                                 if (entry_isdir_i(to, to_i)) {
-                                        submit_job_first(NULL, &to->array[to_i], to, NULL, depth+1, remove_hierarchy);
+                                        submit_job_first(NULL, NULL, to, dir_entry(to, to_i)->name, depth+1, remove_hierarchy);
                                 } else {
 	                                unlink_entry(to, dir_entry(to, to_i));
                                 }
@@ -1531,7 +1534,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 close(fd);
         }
 
-        from=read_directory(from_parent, parent_fentry);
+        from=read_directory(from_parent, parent_fentry->name);
         if (!from) {
                 item2("# skipping non readable diretory", from_parent, parent_fentry->name);
                 atomic_fetch_add(&opers.read_errors, 1);
@@ -1544,7 +1547,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 struct stat target_stat;
                 tofd=dir_open(to_parent);
                 if (tofd<0) {
-                        write_error("Can't open parent directory", to_parent, ".");
+                        write_error("Can't open target parent directory", to_parent, ".");
                         goto fail;
                 }
                 if (fstatat(tofd, target, &target_stat, AT_SYMLINK_NOFOLLOW)==0) {
@@ -1583,17 +1586,11 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         // but the directory we are copying to:
         // 1. might just be created
         // 2. in case of --dry-run might not never exist
-        // 3. in other case of --dry-run --delete might be a something else than dir
+        // 3. if --dry-run and --delete might be a something else than dir
         // 4. Might be the root target directory which does not have a parent
         Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
-        if (parent_tentry==NULL) {
-                DEBUG("Creating dummy target Entry for %s/%s\n", dir_path(to_parent), target);
-                parent_tentry=my_calloc(1, sizeof(Entry)); // FIXME: leak
-                parent_tentry->name=my_strdup(target);
-                parent_tentry->state=ENTRY_DIR;
-        }
-        if (dryrun && !S_ISDIR(entry_stat(parent_tentry)->st_mode)) {
-                // We dont have a target directory. We need to create a dummy empty one
+        if (dryrun && to_parent && (parent_tentry==NULL || !entry_isdir(parent_tentry)) ) {
+                // We dont have a target directory to read. We need to create a dummy empty one
                 DEBUG("Creating dummy target directory for %s/%s\n", dir_path(to_parent), target);
                 Directory *dir=my_malloc(sizeof(Directory));
                 dir->magick=DIR_MAGICK;
@@ -1604,17 +1601,14 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 dir->entries=0;
                 dir->array=NULL;
                 dir->array=NULL;
-                parent_tentry->dir=dir;
-                dir->parent_entry=parent_tentry;
                 to=dir;
         } else {
-                to=read_directory(to_parent, parent_tentry);
+                to=read_directory(to_parent, target);
                 if (!to) {
-                        read_error("read_target directory", to_parent, parent_tentry->name);
+                        read_error("read target directory", to_parent, parent_tentry->name);
                         item2("# directory read failed", to_parent, target);
                         goto fail;
                 }
-                assert(parent_tentry->dir==to);
         }
 
         // We are ready to submit more sync_directory() jobs

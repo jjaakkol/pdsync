@@ -83,7 +83,6 @@ void release_jobs(Directory *to) {
 int free_job(Job *job)
 {
         assert(job);
-        assert(job->fentry);
         assert(job->state == JOB_READY);
         assert(job->magick == 0x10b10b);
 
@@ -120,25 +119,20 @@ int free_job(Job *job)
 JobResult run_one_job(Job *j)
 {
         assert(j && j->magick == 0x10b10b);
-        Entry *fentry=j->fentry;
-        
+
         switch (j->state)
         {
         case JOB_WAITING:
                 assert(j->magick == 0x10b10b);
-                assert(j->fentry);
-                if (j->fentry->state!=ENTRY_FAILED) {
-                        /* No point in running job if there was an error */
-                        j->state = JOB_RUNNING;
-                        mark_job_start(file_path(j->to, j->target), "job start");
-                        pthread_mutex_unlock(&mut);
-                        j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
-                        pthread_mutex_lock(&mut);
-                        mark_job_start(file_path(j->to, j->target), "job ended");
-                        atomic_fetch_add(&scans.jobs_run, 1);
-                }
+                j->state = JOB_RUNNING;
+                mark_job_start(file_path(j->to, j->target), "job start");
+                pthread_mutex_unlock(&mut);
+                j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
+                pthread_mutex_lock(&mut);
+                mark_job_start(file_path(j->to, j->target), "job ended");
+                atomic_fetch_add(&scans.jobs_run, 1);
                 j->state = JOB_READY;
-                JobResult ret= (fentry->state==ENTRY_FAILED) ? RET_FAILED : RET_OK;
+                JobResult ret= j->ret;
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
                 pthread_cond_broadcast(&cond);
                 return ret;
@@ -197,7 +191,6 @@ void *job_queue_loop(void *arg)
 // Create a new job and init it. 
 Job *create_job(Directory *from, Entry *fentry, Directory *to, const char *target, off_t offset, JobCallback *callback)
 {
-        assert(fentry);
         Job *job = my_calloc(1, sizeof(Job));
 
         job->magick = 0x10b10b;

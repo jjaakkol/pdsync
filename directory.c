@@ -119,10 +119,10 @@ const char *dir_path(const Directory *d)
         _Thread_local static int len;
         if (d)
         {
-                assert(d->magick==0xDADDAD);
+                dir_assert(d);
                 dir_path(d->parent);
-                if (privacy && d->parent && d->parent->parent_entry &&
-                    entry_stat(d->parent->parent_entry)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
+                if (privacy && d->parent &&
+                        dir_stat(d->parent)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
                 {
                         len += snprintf(buf + len, MAXLEN - len, "[0x%lx]/", dir_stat(d)->st_ino);
                 }
@@ -139,7 +139,7 @@ const char *dir_path(const Directory *d)
 const char *file_path(const Directory *d, const char *f)
 {
         _Thread_local static char buf[MAXLEN];
-        if (privacy && d && d->parent_entry && dir_stat(d)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
+        if (privacy && d && d->parent && dir_stat(d)->st_uid != 0 && dir_stat(d)->st_uid != getuid())
         {
                 snprintf(buf, sizeof(buf), "%s%s", dir_path(d), "[PRIVACY]");
         }
@@ -153,10 +153,7 @@ const char *file_path(const Directory *d, const char *f)
 // Free a directory structure if refcount goes zero. Directory mutex must be held.
 static void dir_freedir_locked(Directory *dir)
 {
-        assert(dir->magick == 0xDADDAD);
-        assert(dir->ref>=0);
-        assert(dir->parent_entry);
-        assert(!dir->parent_entry->dir || dir->parent_entry->dir==dir);
+        dir_assert(dir);
 
         atomic_fetch_add(&dir->ref, -1);
         DEBUG("refcount %s %d\n", dir_path(dir), dir->ref);
@@ -182,21 +179,17 @@ static void dir_freedir_locked(Directory *dir)
         }
         free(dir->array);
         free(dir->sorted);
-
-        dir->magick = 0xDADDEAD;
-
+        dir->magick = 1234567; // Magick value that debugger can catch
         free(dir->name);
-        dir->entries = -123; /* Magic value to debug a race */
-        dir->parent_entry->dir=NULL;
-        dir->parent_entry->state=ENTRY_FREED;
+        dir->entries = -123;   // Magick value for debugger to catch
         if (dir->parent)
                 dir_freedir_locked(dir->parent);
         free(dir);
 }
 
 static int dir_close_locked(Directory *d) {
-        assert(d->magick==0xDADDAD);
-        assert(d->ref>0 && d->fdrefs>0);
+        dir_assert(d);
+        assert(d->fdrefs>0);
         atomic_fetch_add(&d->fdrefs, -1);
         if (d->fdrefs==0) dir_freedir_locked(d);
         return 0;
@@ -207,7 +200,7 @@ static int dir_open_locked(Directory *d);
 /* Opens a file or directory, hopefully safely  */
 static int dir_openat_locked(Directory *parent, const char *name)
 {
-        assert(!parent || parent->magick==0xDADDAD);
+        dir_assert(parent);
         int pfd = (parent) ? dir_open_locked(parent) : AT_FDCWD;
         int dfd = openat(pfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NOATIME);
         if (dfd < 0 && errno == EPERM)
@@ -227,9 +220,7 @@ static int dir_openat_locked(Directory *parent, const char *name)
 // Keeps reference counts the fd and the dir
 static int dir_open_locked(Directory *d)
 {
-        assert(d->magick==0xDADDAD);
-        assert(d->ref>0);
-
+        dir_assert(d);
 
         // init max_open_dirs if not init yet
         if (max_open_dirs==0) {
@@ -263,16 +254,13 @@ static int dir_open_locked(Directory *d)
                 }
                 struct stat s;
                 if (fstat(fd, &s) < 0 ) {
-                        show_error_dir("fstat() direcotry", d, ".");
+                        show_error_dir("fstat() directory", d, ".");
                         close(fd);
                         return -1;
                 }
-                if (dir_stat(d)->st_ino==0 && dir_stat(d)->st_dev==0) {
-                        // First time open, save stat info
-                        d->parent_entry->_stat=s;
-                } else if (dir_stat(d)->st_ino != s.st_ino || dir_stat(d)->st_dev != s.st_dev) {
+                if (dir_stat(d)->st_ino != s.st_ino || dir_stat(d)->st_dev != s.st_dev) {
                         // Directory has changed under us!
-                        fprintf(stderr, "Directory inode or dev changed: was %lu:%lu now %lu:%lu\n",
+                        DEBUG("Directory inode or dev changed: was %lu:%lu now %lu:%lu\n",
                                 (unsigned long)dir_stat(d)->st_dev, (unsigned long)dir_stat(d)->st_ino,
                                 (unsigned long)s.st_dev, (unsigned long)s.st_ino);
                         show_error_dir("Directory inode or dev changed", d, ".");
@@ -361,31 +349,27 @@ static int entrycmp(const void *x, const void *y) {
  * - read_directory reads the directory entries and is fast
  * - Doesn't stat the entries, because stats are slow and we wan't stats of job size quickly
  */
-Directory *read_directory(Directory *parent, Entry *parent_entry) {
+Directory *read_directory(Directory *parent, const char *name) {
         int allocated = 1024;
         int dfd = -1;
         DIR *d = NULL;
         int entries = 0;
         Dent *dents = NULL;
         Directory *nd=NULL;
-        const char *name=parent_entry->name;
+        struct stat stat;
 
+        dir_assert(parent);
         set_thread_status(file_path(parent, name), "readdir");
 
-        assert(!parent || parent->magick != 0xDADDEAD);
-        assert(!parent || parent->magick == 0xDADDAD);
-        assert(!parent || parent->ref>0);
 
         // Open the directory and save its fstat() while we have the chance
         if ((dfd = dir_openat(parent, name)) < 0 ||
                 (d = fdopendir(dfd)) == NULL ||
-                fstat(dfd, &parent_entry->_stat) < 0)
+                fstat(dfd, &stat) < 0)
         {
-                parent_entry->state=ENTRY_FAILED;
                 show_error_dir("open directory", parent, name);
                 goto fail;
         }
-        parent_entry->state=ENTRY_INIT;
 
         /* Read the directory and save the names and dents */
         dents = my_calloc(allocated, sizeof(*dents));
@@ -418,14 +402,13 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
 
         /* Init the Directory structure */
         nd=my_calloc(1, sizeof(Directory));
-        parent_entry->dir=nd;
         nd->parent = parent;
         nd->name = my_strdup(name);
-        nd->parent_entry = parent_entry;
         nd->ref = 1;                                    // Caller claims one reference by default
-        nd->magick = 0xDADDAD;
+        nd->magick = DIR_MAGICK;
         nd->fd = -1;
         nd->entries=entries;
+        nd->_stat=stat;
         nd->array = my_calloc(entries, sizeof(Entry));
         nd->sorted = my_calloc(entries, sizeof(Entry *));
         if (parent) dir_claim(parent);                  // Parent is referenced by this dir */
@@ -454,15 +437,12 @@ Directory *read_directory(Directory *parent, Entry *parent_entry) {
         scans.entries_active += entries;
         atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
-        assert(parent_entry->dir==nd);
         return nd;
 
         fail:
         if (dfd>=0) close(dfd);
         for(int i=0; i<entries; i++) free(dents[i].name);
         free(dents);
-        parent_entry->state=ENTRY_FAILED;
-        parent_entry->dir=NULL;
         free(nd);
         return NULL;
 }
@@ -571,9 +551,8 @@ Directory *dir_stat_uring(Directory *nd) {
 }
 
 Directory *scan_directory(Directory *nd) {
-        assert(nd && nd->magick == 0xDADDAD);
+        dir_assert(nd);
 
-        if (nd->parent_entry->state==ENTRY_FAILED) return NULL;
         if (nd->entries==0) return nd; // Empty directory, nothing to do
 
         if (dir_open(nd)<0) {
