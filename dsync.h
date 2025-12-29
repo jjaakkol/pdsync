@@ -46,11 +46,13 @@ typedef struct
         EntryState state;
 } Entry;
 
+#define DIR_MAGICK 0xDADDAD
+#define DIR_ZOMBIE 0xDADDEAD
 // We keep the fd's of directories in a LRU cache to avoid closing and opening needlessly
 // We use openat() always to open files
 typedef struct DirectoryStruct
 {
-        int magick;                       // 0xDADDAD to catch a race, 0xDEADBEEF to mark a zombie
+        int magick;                       // DIR_MACICK
         int fd;                           // fd of open directory, -1 if not open
         atomic_int fdrefs;                // Count references to fd so that we can cache fds
         struct DirectoryStruct *lru_prev; // The LRU list
