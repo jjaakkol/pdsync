@@ -467,7 +467,7 @@ Directory *dir_stat_uring(Directory *nd) {
         int in_flight = 0;
         int next_entry = 0;
         int completed = 0;
-        int job=0;
+        long job=0;
         while (completed < entries) {
                 // Submit jobs while we have slots and entries left
                 for (;in_flight < MAX_IN_FLIGHT && next_entry < entries; next_entry++) {
@@ -484,7 +484,7 @@ Directory *dir_stat_uring(Directory *nd) {
                         }
                         statx_jobs[job].idx = next_entry;
                         io_uring_prep_statx(sqe, nd->fd, e->name, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &statx_jobs[job].statxbuf);
-                        io_uring_sqe_set_data64(sqe, job);
+                        io_uring_sqe_set_data(sqe, (void *) job);
                         in_flight++;
                         job++;
                 }
