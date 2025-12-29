@@ -331,7 +331,9 @@ void d_freedir(Directory *dir)
 }
 
 Entry *directory_lookup(const Directory *d, const char *name) {
-        assert(d && name && d->sorted);
+        assert(d && name);
+        if (d->entries==0) return NULL;
+        assert(d->sorted);
 
         int left = 0;
         int right = d->entries - 1;

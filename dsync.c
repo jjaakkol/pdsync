@@ -1219,25 +1219,32 @@ void skip_entry(Directory *to, Entry *fentry) {
 /* Job call back to update the inode bits */
 JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const char *target, off_t offset) {
         int ret=0;
+        int dfd=-1;
+        struct stat to_stat;
         set_thread_status(file_path(to, target),"metadata");
 
-        int dfd=dir_open(to);
-        if (dfd==-1) {
-                show_error("open()", dir_path(to));
-                goto fail; 
-        }
         if (target==NULL) {
                 target="."; // Target the directory itself. 
         }
 
-        /* Lookup the current inode state. It might have changed during copying and file creation. */
-        struct stat to_stat;
-        if (fstatat(dfd, target, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
-                if (!dryrun) {
+        if (!dryrun) {
+                /* Lookup the current inode state. It might have changed during copying and file creation. */
+                dfd=dir_open(to);
+                if (dfd==-1) {
+                        show_error("open()", dir_path(to));
+                        goto fail; 
+                }
+                if (fstatat(dfd, target, &to_stat, AT_SYMLINK_NOFOLLOW )<0) {
                         write_error("sync_metadata can't stat target (fstatat)", to, target);
                         goto fail;
+                }
+       } else {
+                 // In --dryrun we just use cached data, if we even have that.
+                Entry *tentry=directory_lookup(to, target);
+                if (tentry) {
+                        to_stat = *entry_stat(tentry);
                 } else {
-                        memset(&to_stat, 0, sizeof(to_stat)); // Set it to zeroes so that all metadata is applied
+                        memset(&to_stat, 0, sizeof(to_stat));
                 }
        }
 
@@ -1360,7 +1367,7 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         atomic_fetch_add(&scans.files_synced,1);
 
         out:
-        dir_close(to);
+        if (dfd>=0) dir_close(to);
         return ret;
         fail:
         ret=RET_FAILED;
@@ -1416,10 +1423,14 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         const char *source=fentry->name;
         assert(source);
 
-        int tofd=dir_open(to);
-        if (tofd<0) {
-                write_error("Target directory has gone away", to, target);
-                return -1;
+        int tofd=-1;
+        if (!dryrun) {
+                // Don't bother to open target if --dryrun: it might not exist
+                tofd=dir_open(to);
+                if (tofd<0) {
+                        write_error("Target directory has gone away", to, target);
+                        return -1;
+                }
         }
 
         if (S_ISREG(entry_stat(fentry)->st_mode)) {
@@ -1470,7 +1481,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 
         int ret=0;
         out: 
-        dir_close(to);
+        if (tofd>=0) dir_close(to);
         return ret;
         fail:
         ret=1;
@@ -1494,6 +1505,8 @@ JobResult sync_remove(Directory *from, Entry *parent_fentry, Directory *to, cons
         return RET_OK;
 }
 
+// to_parent might be NULL in case of dry-run or target directory does not exist
+// from_parent might be NULL if source root directory
 JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory *to_parent, const char *target, off_t depth) {
         Directory *from=NULL;
         Directory *to=NULL;
@@ -1566,22 +1579,43 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 if (tofd>0) dir_close(to_parent);
         }
 
-        // We always have a parent_fentry, since that is where we are copying files from,
-        // but the directory we are copying to might just be created or in case of --dry-run not exist
-        // FIXME this is a memory leak
+        // We always have a parent_fentry, since that is where we are copying files from.
+        // but the directory we are copying to:
+        // 1. might just be created
+        // 2. in case of --dry-run might not never exist
+        // 3. in other case of --dry-run --delete might be a something else than dir
+        // 4. Might be the root target directory which does not have a parent
         Entry *parent_tentry=(to_parent) ? directory_lookup(to_parent, target) : NULL;
         if (parent_tentry==NULL) {
-                parent_tentry=my_calloc(1,sizeof(Entry));
-                init_entry(parent_tentry, dir_open(to_parent), my_strdup(target));
-                dir_close(to_parent);
+                DEBUG("Creating dummy target Entry for %s/%s\n", dir_path(to_parent), target);
+                parent_tentry=my_calloc(1, sizeof(Entry)); // FIXME: leak
+                parent_tentry->name=my_strdup(target);
+                parent_tentry->state=ENTRY_DIR;
         }
-        to=read_directory(to_parent, parent_tentry);
-        if (!to) {
-                read_error("read_target directory", to_parent, parent_tentry->name);
-                item2("# directory read failed", to_parent, target);
-                goto fail;
+        if (dryrun && !S_ISDIR(entry_stat(parent_tentry)->st_mode)) {
+                // We dont have a target directory. We need to create a dummy empty one
+                DEBUG("Creating dummy target directory for %s/%s\n", dir_path(to_parent), target);
+                Directory *dir=my_malloc(sizeof(Directory));
+                dir->magick=DIR_MAGICK;
+                dir->ref=1;
+                dir->fd=-1;
+                dir->parent=NULL;
+                dir->name=my_strdup(file_path(to_parent, target));
+                dir->entries=0;
+                dir->array=NULL;
+                dir->array=NULL;
+                parent_tentry->dir=dir;
+                dir->parent_entry=parent_tentry;
+                to=dir;
+        } else {
+                to=read_directory(to_parent, parent_tentry);
+                if (!to) {
+                        read_error("read_target directory", to_parent, parent_tentry->name);
+                        item2("# directory read failed", to_parent, target);
+                        goto fail;
+                }
+                assert(parent_tentry->dir==to);
         }
-        assert(parent_tentry->dir);
 
         // We are ready to submit more sync_directory() jobs
         if (recursive) {
@@ -1634,7 +1668,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         atomic_fetch_add(&scans.sync_directory_queue, -1);
 
         // File remove can be done in another thread
-        if (delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
+        if (to && delete) submit_job_first(from, parent_fentry, to, target, 0, sync_remove);
 
         // Ready to sync files now.
         submit_or_run_job(from, parent_fentry, to, target, 0, sync_files);
@@ -1666,11 +1700,13 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
                 return RET_FAILED;
         }
 
-        to=scan_directory(to);
-        if (to==NULL) {
-                read_error("scan_directory", to, ".");
-                item2("# target directory scan failed", to, ".");
-                return RET_FAILED;
+        if (to) {
+                to=scan_directory(to);
+                if (to==NULL) {
+                        read_error("scan_directory", to, ".");
+                        item2("# target directory scan failed", to, ".");
+                        return RET_FAILED;
+                }
         }
 
         // Loop through the source directory and check for changes
