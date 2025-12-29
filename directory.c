@@ -427,14 +427,10 @@ Directory *read_directory(Directory *parent, const char *name) {
         for (int i=0; i<entries; i++) nd->sorted[i]=&nd->array[i];
         qsort(nd->sorted, entries, sizeof(Entry *), entrycmp);
 
-        while (parent) {
-                atomic_fetch_add(&parent->descendants, entries);
-                parent=parent->parent;
-        }
-
-        /* Update stats */
-        if (++scans.dirs_active > scans.dirs_active_max) scans.dirs_active_max = scans.dirs_active;
-        scans.entries_active += entries;
+        // Updating stats atomically
+        int new_dirs_active = atomic_fetch_add(&scans.dirs_active, 1) + 1;
+        if (new_dirs_active > scans.dirs_active_max) scans.dirs_active_max = new_dirs_active;
+        atomic_fetch_add(&scans.entries_active, entries);
         atomic_fetch_add(&scans.dirs_read, 1);
         //printf("readdir done %s %ld\n",file_path(parent,name),depth);
         return nd;

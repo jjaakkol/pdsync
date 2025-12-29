@@ -61,7 +61,6 @@ typedef struct DirectoryStruct
         struct stat _stat;
         char *name;
         int entries;
-        atomic_int descendants; // Total number of known descendants, which grows while they are being scanned. */
         atomic_int ref;
         Entry *array;
         Entry **sorted;
@@ -73,13 +72,16 @@ typedef struct DirectoryStruct
 typedef struct
 {
         struct timespec start_clock_boottime;
+        atomic_int dirs_total;
         atomic_int dirs_read;
+        atomic_int dirs_skipped;
         atomic_int entries_checked;
         atomic_llong bytes_checked;
         atomic_llong bytes_skipped;
-        int dirs_skipped;
-        int files_skipped;
+        atomic_int files_skipped;
         atomic_int files_synced;
+        atomic_int files_total;
+        atomic_llong bytes_total;
         atomic_int hard_links_saved;
 
         atomic_int sync_directory_queue;   // queued jobs to sync a directory. If all dirs have been read this is 0
@@ -89,8 +91,8 @@ typedef struct
         int jobs_waiting;      // Jobs waiting for other jobs to finish
         atomic_llong jobs_run; // Number of jobs already finished
 
-        int dirs_active;
-        int entries_active;
+        atomic_int dirs_active;
+        atomic_int entries_active;
         int dirs_active_max;
         int dirs_freed;
 

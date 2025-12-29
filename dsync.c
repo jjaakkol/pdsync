@@ -252,7 +252,7 @@ static void item2(const char *i, const Directory *d, const char *name ) {
 
 const char *format_bytes(long long bytes, char output[static 32]) {
         if (bytes < 1024) {
-                snprintf(output, 32, "%5lldB", bytes);
+                snprintf(output, 32, "%lldB", bytes);
         } else if (bytes < 1024 << 10 ) {
                 snprintf(output, 32, "%.1fKiB", bytes / 1024.0);
         } else if (bytes < 1024 << 20) {
@@ -384,17 +384,17 @@ static void print_scans(const Scans *scans) {
         if (scans->slow_io_secs) {
                 printf("%8d seconds of slow IO\n", scans->slow_io_secs);
         }
+        if (scans->dirs_total) {
+                printf("%8d total directories\n",scans->dirs_total);
+        }
         if (scans->dirs_read) {
 	        printf("%8d directories read\n",scans->dirs_read);
         }
         if (scans->dirs_skipped) {
                 printf("%8d directories skipped\n",scans->dirs_skipped);
         }
-        if (scans->sync_directory_running>0) {
-	        printf("%8d directory reads running\n",scans->sync_directory_running);
-        }
-        if (scans->sync_directory_queue>0) {
-	        printf("%8d directories queued for read\n",scans->sync_directory_queue);
+        if (scans->files_total) {
+                printf("%8d total files\n",scans->files_total);
         }
         if (scans->entries_checked) {
 	        printf("%8d files checked\n",scans->entries_checked);
@@ -410,6 +410,12 @@ static void print_scans(const Scans *scans) {
         }
         if (scans->jobs_waiting) {
                 printf("%8d jobs waiting\n", scans->jobs_waiting);
+        }
+        if (scans->sync_directory_running>0) {
+	        printf("%8d directory reads running\n",scans->sync_directory_running);
+        }
+        if (scans->sync_directory_queue>0) {
+	        printf("%8d directories queued for read\n",scans->sync_directory_queue);
         }
         if (scans->dirs_active>=0) {
                 printf("%8d directories in memory now\n",scans->dirs_active);
@@ -518,6 +524,7 @@ void print_progress() {
         char status[64]="";
 
         char B[32];
+        char B_total[32];
         char BpS[32];
 
         if (!progress) return;
@@ -535,25 +542,30 @@ void print_progress() {
         // Check for stalled progress
         if (last_jobs_run==scans.jobs_run) {
                 snprintf(status, sizeof(status)-1, "stalled %ld secs", s-slow_secs);
-        } else slow_secs=s;
+        } else {
+                slow_secs=s;
+                if (scans.idle_threads>0) {
+                        snprintf(status, sizeof(status)-1, "%d idle threads", scans.idle_threads);
+                } else {
+                        snprintf(status, sizeof(status)-1, "running");
+                }
+        }
 
         int files_synced=atomic_load(&scans.files_synced);
-        // FIXME: get rid of descendants
-        int files_total=(source_root.dir) ? atomic_load(&source_root.dir->descendants) + source_root.dir->entries : 0;
+        int files_total=atomic_load(&scans.files_total);
         const char *less_or_equal = (scans.sync_directory_queue>0) ? "<" : "=";
         float percent=100;
         if (files_total>0) percent=(100.0*files_synced)/files_total;
         fprintf(tty_stream, "\033[K PG %02lld:%02lld:%02lld | ", s / 3600LL, (s / 60LL) % 60, s % 60LL );
-        fprintf(tty_stream,"%d/%d files %s%2.1f%% |%7.1ff/s |%9s |%9s/s | %7.1f jobs/s | %d/%d queued|%3d idle | %s\n",
+        fprintf(tty_stream,"%d/%d files %s%2.1f%% |%7.1ff/s | %s/%s |%9s/s | %7.1f jobs/s | %s\n",
                 files_synced,
                 files_total,
                 less_or_equal, percent,
                 1000000000.0 * (files_synced-last_synced) / (now_ns-last_ns),
                 format_bytes(opers.bytes_copied, B),
-                format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns),BpS),
+                format_bytes(scans.bytes_total, B_total),
+                format_bytes( 1000000000.0L *(opers.bytes_copied-last_bytes) / (now_ns-last_ns), BpS),
                 1000000000.0 *(scans.jobs_run-last_jobs_run) / (now_ns-last_ns),
-                scans.queued, scans.maxjobs,
-                scans.idle_threads,
                 status
         );
         if (progress==1) fprintf(tty_stream,"\033[1A");
@@ -1203,10 +1215,10 @@ int entry_changed(Entry *from, Entry *to) {
 
 void skip_entry(Directory *to, Entry *fentry) {
         if ( S_ISDIR(entry_stat(fentry)->st_mode) ) {
-	        scans.dirs_skipped++;
+	        atomic_fetch_add(&scans.dirs_skipped, 1);
 	        item2("Skipping firectory", to, fentry->name);
         } else {
-                scans.files_skipped++;
+                atomic_fetch_add(&scans.files_skipped, 1);
                 item2("Skipping file", to, fentry->name);
         }
 }
@@ -1423,7 +1435,7 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 // Don't bother to open target if --dryrun: it might not exist
                 tofd=dir_open(to);
                 if (tofd<0) {
-                        write_error("Target directory has gone away", to, target);
+                        write_error("Target directory has been removed or changed", to, target);
                         return -1;
                 }
         }
@@ -1449,7 +1461,13 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
                 goto out;
 
         } else if (S_ISFIFO(entry_stat(fentry)->st_mode)) {
-	        if (!preserve_devices) return 0;
+	        if (!preserve_devices) goto out;
+                struct stat fifostat;
+                if (fstatat(tofd, target, &fifostat, AT_SYMLINK_NOFOLLOW)==0 && S_ISFIFO(fifostat.st_mode)) {
+                        // FIFO already exists
+                        item2("# keep fifo", to, target);
+                        goto out;
+                }
                 if (!dryrun && mkfifoat(tofd, target,
                         entry_stat(fentry)->st_mode & 0777)<0) {
                         write_error("mkfifo", to, target);
@@ -1518,7 +1536,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                         size_t s=fgetxattr(fd, sync_tag_name, buf, sizeof(buf));
                         if (s == strlen(sync_tag) && memcmp(sync_tag,buf,s)==0 ) {
                                 item2("# tagged", to_parent, target);
-                                scans.dirs_skipped++;
+                                atomic_fetch_add(&scans.dirs_skipped, 1);
                                 close(fd);
                                 goto fail;
                         }
@@ -1610,6 +1628,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                 // FIXME: this loop should probably use io_uring
                 for(int i=0; i<from->entries; i++) {
                         if (entry_isdir_i(from ,i)) {
+                                atomic_fetch_add(&scans.dirs_total, 1);
                                 Entry *fentry=dir_entry(from,i);
                                 char *target=fentry->name;
                                 int dfd=dir_open(from);
@@ -1650,6 +1669,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         }
 
         // sync_directory() part is done
+        atomic_fetch_add(&scans.files_total, from->entries);
         atomic_fetch_add(&scans.sync_directory_running, -1);
         atomic_fetch_add(&scans.sync_directory_queue, -1);
 
@@ -1685,6 +1705,12 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 	        atomic_fetch_add(&scans.read_errors, 1);
                 return RET_FAILED;
         }
+        // update stats
+        long dir_bytes=0;
+        for(int i=0; i<from->entries; i++) {
+                dir_bytes+=entry_stat(dir_entry(from,i))->st_size;
+        }
+        atomic_fetch_add(&scans.bytes_total, dir_bytes);
 
         if (to) {
                 to=scan_directory(to);
