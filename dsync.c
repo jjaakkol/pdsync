@@ -95,14 +95,6 @@ typedef struct {
         atomic_llong times;
         atomic_llong items;             // Number of of operations listed with --itemize
         atomic_llong sync_tags;         // sync_tags created
-
-        // Errors and warnings
-        atomic_llong sockets_warned;
-        atomic_llong devs_warned;
-        atomic_llong chown_warned;
-        atomic_llong read_errors;
-        atomic_llong write_errors;
-        atomic_llong error_espace;
 } Opers; 
 Opers opers;
 Scans scans;
@@ -214,16 +206,16 @@ void show_error(const char *why, const char *file) {
 }
 
 int read_error(const char *why, const Directory *d, const char *file) {
-        atomic_fetch_add(&opers.read_errors, 1);
+        atomic_fetch_add(&scans.read_errors, 1);
         show_error("Read error:", file_path(d, file));
         return 0;
 }
 
 void write_error(const char *why, const Directory *d, const char *file) {
         if (errno==ENOSPC) {
-	        atomic_fetch_add(&opers.error_espace, 1);
+	        atomic_fetch_add(&scans.error_espace, 1);
         }
-        atomic_fetch_add(&opers.write_errors, 1);
+        atomic_fetch_add(&scans.write_errors, 1);
         show_error(why, file_path(d, file));
         fprintf(stderr,"Write error, exiting immediately\n");
         exit(2);
@@ -499,20 +491,20 @@ static void print_opers(FILE *stream, const Opers *stats) {
     if (stats->sync_tags) {
         fprintf(stream,"%8lld sync tags set\n", stats->sync_tags);
     }
-    if (stats->sockets_warned) {
-        fprintf(stream, "%8lld sockets skipped\n", stats->sockets_warned);
+    if (scans.sockets_warned) {
+        fprintf(stream, "%8lld sockets skipped\n", scans.sockets_warned);
     }
-    if (stats->devs_warned) {
-        fprintf(stream, "%8lld device nodes skipped\n", stats->devs_warned);
+    if (scans.devs_warned) {
+        fprintf(stream, "%8lld device nodes skipped\n", scans.devs_warned);
     }
-    if (stats->chown_warned) {
-        fprintf(stream, "%8lld chown failed\n", stats->chown_warned);
+    if (scans.chown_warned) {
+        fprintf(stream, "%8lld chown failed\n", scans.chown_warned);
     }
-    if (stats->read_errors) {
-        fprintf(stream, "%8lld errors on read\n", stats->read_errors);
+    if (scans.read_errors) {
+        fprintf(stream, "%8lld errors on read\n", scans.read_errors);
     }
-    if (stats->write_errors) {
-        fprintf(stream, "%8lld errors on write\n", stats->write_errors);
+    if (scans.write_errors) {
+        fprintf(stream, "%8lld errors on write\n", scans.write_errors);
     }
 }
 
@@ -1264,10 +1256,10 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
                 if (!dryrun && fchownat(dfd, target, uid, gid, AT_SYMLINK_NOFOLLOW)<0 ) {
                         if (errno==EPERM) {
                                 // Only warn about chown EPERM errors, user might not be root
-                                if (atomic_load(&opers.chown_warned)==0) {
+                                if (atomic_load(&scans.chown_warned)==0) {
                                         show_error("fchownat() returned EPERM. Skipping rest of fchownat() errors:", file_path(to, target));
                                 }
-                                atomic_fetch_add(&opers.chown_warned, 1);
+                                atomic_fetch_add(&scans.chown_warned, 1);
                         } else {
                                 write_error("fchownat()", to, target);
                         }
@@ -1450,10 +1442,10 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
         } else if (S_ISLNK(entry_stat(fentry)->st_mode)) {
                 create_symlink(from, fentry, to, target, depth);
         } else if (S_ISSOCK(entry_stat(fentry)->st_mode)) {
-                if (opers.sockets_warned==0) {
+                if (scans.sockets_warned==0) {
                         show_error_dir("Sockets are ignored. Only first socket found is reported.", from,fentry->name);
                 }
-                atomic_fetch_add(&opers.sockets_warned, 1);
+                atomic_fetch_add(&scans.sockets_warned, 1);
                 goto out;
 
         } else if (S_ISFIFO(entry_stat(fentry)->st_mode)) {
@@ -1469,10 +1461,10 @@ int create_target(Directory *from, Entry *fentry, Directory *to, const char *tar
 
         // Don't bother with device special files 
         } else if (S_ISCHR(entry_stat(fentry)->st_mode) || S_ISBLK(entry_stat(fentry)->st_mode)) {
-                if (opers.devs_warned==0) {
+                if (scans.devs_warned==0) {
                         show_error_dir("Ignoring device. Only first device is reported.", from, fentry->name);
                 }
-                atomic_fetch_add(&opers.devs_warned, 1);
+                atomic_fetch_add(&scans.devs_warned, 1);
                 goto out;
         } else {
 	        show_error_dir("Unknown file type ignored in dir", from, fentry->name);
@@ -1537,7 +1529,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
         from=read_directory(from_parent, parent_fentry->name);
         if (!from) {
                 item2("# skipping non readable diretory", from_parent, parent_fentry->name);
-                atomic_fetch_add(&opers.read_errors, 1);
+                atomic_fetch_add(&scans.read_errors, 1);
                 goto fail;
         }
 
@@ -1626,7 +1618,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                 } else {
                                         read_error("dir_open", from, fentry->name);
                                         item2("# directory open failed", from, fentry->name);
-                                        opers.read_errors++;
+                                        scans.read_errors++;
                                         continue;
                                 }
                                 dir_close(from);
@@ -1690,7 +1682,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
         if (from==NULL) {
                 read_error("scan_directory", from, ".");
                 item2("# source directory scan failed", from, ".");
-	        opers.read_errors++;
+	        atomic_fetch_add(&scans.read_errors, 1);
                 return RET_FAILED;
         }
 
@@ -1710,7 +1702,7 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 
                 if (fentry->state == ENTRY_FAILED) {
                         item2("# File has gone away\n", from, fentry->name);
-                        atomic_fetch_add(&opers.read_errors, 1);
+                        atomic_fetch_add(&scans.read_errors, 1);
                         continue;
                 }
 	    
@@ -1865,17 +1857,17 @@ int main(int argc, char *argv[]) {
         if (stats>0) print_opers(stdout, &opers);
         if (stats>1) print_scans(&scans);
 
-        if (opers.error_espace && !delete_only) {
+        if (scans.error_espace && !delete_only) {
 	        show_warning("WARNING: Out of space (ESPACE).",NULL);
         }
-        if (opers.read_errors) {
+        if (scans.read_errors) {
                 fprintf(stderr,"WARNING: There was read errors!\n");
         }
-        if (opers.write_errors) {
+        if (scans.write_errors) {
 	        fprintf(stderr,"WARNING: There was write errors!\n");
         }
         int ret=0;
-        if (opers.read_errors>0 || opers.write_errors>0)  {
+        if (scans.read_errors>0 || scans.write_errors>0)  {
                 ret=2; // Return 2 if there was any errors
         } else {
                 Opers dummy;
