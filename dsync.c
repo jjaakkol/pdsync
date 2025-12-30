@@ -82,13 +82,13 @@ typedef struct {
         atomic_llong files_copied;
         atomic_llong files_reflinked;
         atomic_llong files_updated;
-        int entries_removed;
-        int dirs_removed;
+        atomic_llong entries_removed;
+        atomic_llong dirs_removed;
         atomic_llong bytes_copied;
         atomic_llong sparse_bytes;
         atomic_llong symlinks_created;
         atomic_llong fifos_created;
-        int hard_links_created;
+        atomic_llong hard_links_created;
         atomic_llong chown;
         atomic_llong chmod;
         atomic_llong times;
@@ -439,7 +439,7 @@ static void print_opers(FILE *stream, const Opers *stats) {
         long s = ns / 1000000000L;
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
 
-        // I've spent too long this...
+        // I've spent too long on this...
         fprintf(stream,"# ");
         for(int i=0;static_argv[i];i++) fprintf(stream," %s",static_argv[i]);
         fprintf(stream,"\n");
@@ -448,69 +448,54 @@ static void print_opers(FILE *stream, const Opers *stats) {
         fprintf(stream, " CPUtime %02lld:%02lld:%02lld.%03lld (%.1f%%)\n",
                 now.tv_sec / 3600LL, (now.tv_sec / 60LL) % 60, now.tv_sec % 60LL, now.tv_nsec/1000000LL % 1000,
                 100.0 * (now.tv_sec*1000000000 + now.tv_nsec) / ns);
-        if (stats->dirs_created) {
-                fprintf(stream, "%8lld directories created\n", stats->dirs_created);
+
+        // Byte stats
+        char buf[32];
+        fprintf(stream, "%8s bytes copied, ", format_bytes(stats->bytes_copied, buf));
+        fprintf(stream, "%s/s\n", format_bytes(stats->bytes_copied*1000000000.0/ns,buf));    
+        fprintf(stream, "%8s bytes checked, ", format_bytes(scans.bytes_checked, buf));
+        fprintf(stream, "%s/s\n", format_bytes(scans.bytes_checked*1000000000.0/ns,buf));
+        if (scans.bytes_skipped) {
+                fprintf(stream, "%8s bytes skipped\n", format_bytes(scans.bytes_skipped, buf));
         }
-    if (stats->dirs_removed) {
-        fprintf(stream, "%8d directories removed\n", stats->dirs_removed);
-    }
-    if (stats->entries_removed) {
-        fprintf(stream, "%8d entries removed\n", stats->entries_removed);
-    }
-    if (stats->files_copied) {
-        fprintf(stream, "%8lld files copied, %.1ff/s\n", stats->files_copied,
-                stats->files_copied*1000000000.0/ns);
-    }
-    if (stats->files_reflinked) {
-        fprintf(stream, "%8lld files reflinked\n", stats->files_reflinked);
-    }
-    char buf[32];
-    fprintf(stream, "%8s bytes copied, ", format_bytes(stats->bytes_copied, buf));
-    fprintf(stream, "%s/s\n", format_bytes(stats->bytes_copied*1000000000.0/ns,buf));    
-    fprintf(stream, "%8s bytes checked, ", format_bytes(scans.bytes_checked, buf));
-    fprintf(stream, "%s/s\n", format_bytes(scans.bytes_checked*1000000000.0/ns,buf));
-    if (scans.bytes_skipped) {
-        fprintf(stream, "%8s bytes skipped\n", format_bytes(scans.bytes_skipped, buf));
-    }
-    if (stats->sparse_bytes) {
-        fprintf(stream, "%8s data in sparse blocks\n", format_bytes(stats->sparse_bytes, buf));
-    }
-    if (stats->symlinks_created) {
-        fprintf(stream, "%8lld symlinks created\n", stats->symlinks_created);
-    }
-    if (stats->hard_links_created) {
-        fprintf(stream, "%8d hard links created\n", stats->hard_links_created);
-    }
-    if (stats->fifos_created) {
-        fprintf(stream, "%8lld fifos created\n", stats->fifos_created);
-    }
-    if (stats->chown) {
-        fprintf(stream,"%8lld file owner/group changed\n", stats->chown);
-    }
-    if (stats->chmod) {
-        fprintf(stream,"%8lld file chmod bits changed\n", stats->chmod);
-    }
-    if (stats->times) {
-        fprintf(stream,"%8lld file atime/mtime changed\n", stats->times);
-    }
-    if (stats->sync_tags) {
-        fprintf(stream,"%8lld sync tags set\n", stats->sync_tags);
-    }
-    if (scans.sockets_warned) {
-        fprintf(stream, "%8lld sockets skipped\n", scans.sockets_warned);
-    }
-    if (scans.devs_warned) {
-        fprintf(stream, "%8lld device nodes skipped\n", scans.devs_warned);
-    }
-    if (scans.chown_warned) {
-        fprintf(stream, "%8lld chown failed\n", scans.chown_warned);
-    }
-    if (scans.read_errors) {
-        fprintf(stream, "%8lld errors on read\n", scans.read_errors);
-    }
-    if (scans.write_errors) {
-        fprintf(stream, "%8lld errors on write\n", scans.write_errors);
-    }
+        if (stats->sparse_bytes) {
+                fprintf(stream, "%8s data in sparse blocks\n", format_bytes(stats->sparse_bytes, buf));
+        }
+        if (stats->files_copied) {
+                fprintf(stream, "%8lld files copied, %.1ff/s\n", 
+                        stats->files_copied,
+                        stats->files_copied*1000000000.0/ns);
+        }
+
+        struct {
+                const atomic_llong *stat;
+                const char *description;
+        } scan_stats[] = {
+                { &stats->dirs_created, "directories created" },
+                { &stats->dirs_removed, "directories removed" },
+                { &stats->entries_removed, "files removed" },
+                { &stats->files_reflinked, "files reflinked" },
+                { &stats->symlinks_created, "symlinks created" },
+                { &stats->hard_links_created, "hard links created" },
+                { &stats->fifos_created, "fifos created" },
+                { &stats->chown, "file owner/group changed" },
+                { &stats->chmod, "file mode bits changed" },
+                { &stats->times, "file atime/mtime changed" },
+                { &stats->sync_tags, "sync tags set" },
+                { &scans.sockets_warned, "sockets skipped" },
+                { &scans.devs_warned, "device nodes skipped" },
+                { &scans.chown_warned, "chown failed" },
+                { &scans.read_errors, "errors on read" },
+                { &scans.write_errors, "errors on write" },
+                { NULL, NULL }
+        };
+
+        for(int i=0; scan_stats[i].stat; i++) {
+                long long count = atomic_load(scan_stats[i].stat);
+                if (count) {
+                        fprintf(stream, "%8lld %s\n", count, scan_stats[i].description);
+                }
+        }
 }
 
 // Print the progress to ttysream, obeying privacy options. Called from a thread once a second
@@ -594,7 +579,7 @@ int unlink_file(Directory *parent, const char *name) {
         }
         if (ret==0) {
                 itemf("rm -f %s\n", file_path(parent, name));
-                opers.entries_removed++;
+                atomic_fetch_add(&opers.entries_removed, 1);
         }
         return ret;
 }
@@ -619,7 +604,7 @@ JobResult remove_directory(Directory *ignored, Entry *ignored2, Directory *del, 
                 }
         }
         itemf("rmdir %s\n", file_path(del->parent, target));
-        opers.dirs_removed++;
+        atomic_fetch_add(&opers.dirs_removed, 1);
         fail:
         if (dfd>=0) dir_close(del->parent);
         return ret;
@@ -984,7 +969,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         if (offset/copy_job_size == num_jobs-1) {
                 // This is the last job. Show copy done, even if some copy jobs might be still running
                 itemf("cp %s %s\n", file_path(from, source), file_path(to, target));
-                opers.files_copied++;
+                atomic_fetch_add(&opers.files_copied, 1);
         }
 
         end:
@@ -1073,7 +1058,7 @@ JobResult create_hard_link(Directory *from, Entry *fentry, Directory *to, const 
                 goto write_error;
         } else {
                 itemf("ln %s %s\n", l->target_path, file_path(to, target));
-                opers.hard_links_created++;
+                atomic_fetch_add(&opers.hard_links_created, 1);
         }
 
         out:
@@ -1636,7 +1621,7 @@ JobResult sync_directory(Directory *from_parent, Entry *parent_fentry, Directory
                                 } else {
                                         read_error("dir_open", from, fentry->name);
                                         item2("# directory open failed", from, fentry->name);
-                                        scans.read_errors++;
+                                        atomic_fetch_add(&scans.read_errors, 1);
                                         continue;
                                 }
                                 dir_close(from);
