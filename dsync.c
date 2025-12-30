@@ -232,15 +232,15 @@ static void show_warning(const char *why, const char *file) {
 }
 
 // write an --itemize line
-void itemf(const char *fmt, ...) __attribute__ ((format(printf,1,2)));
-void itemf(const char *fmt, ...) {
+void itemf_real(const char *fmt, ...) __attribute__ ((format(printf,1,2)));
+void itemf_real(const char *fmt, ...) {
         va_list args;
         atomic_fetch_add(&opers.items,1);
-        if (itemize<1) return;
         va_start(args, fmt);
         vfprintf(stdout, fmt, args);
         va_end(args);
 }
+#define itemf(...) do { if (itemize > 0) itemf_real(__VA_ARGS__); } while(0)
 
 // it itemize>1 we write an entry of skipped items
 static void item2(const char *i, const Directory *d, const char *name ) {
