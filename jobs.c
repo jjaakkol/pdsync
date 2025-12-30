@@ -26,7 +26,8 @@ typedef struct JobStruct
 
 
 static pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t job_submitted = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t job_done = PTHREAD_COND_INITIALIZER;
 static Job *first_job = NULL;
 static Job *last_job=NULL;
 
@@ -134,7 +135,7 @@ JobResult run_one_job(Job *j)
                 j->state = JOB_READY;
                 JobResult ret= j->ret;
                 free_job(j); /* If we ever need a mechanism to wait for job status, we could keep the job as a zombie job */
-                pthread_cond_broadcast(&cond);
+                pthread_cond_broadcast(&job_done);
                 return ret;
 
         default:
@@ -167,7 +168,7 @@ JobResult run_any_job()
         mark_job_start(NULL, "idle");
         scans.idle_threads++;
         this_thread.idle=1;
-        pthread_cond_wait(&cond, &job_mutex);
+        pthread_cond_wait(&job_submitted, &job_mutex);
         this_thread.idle=0;
         scans.idle_threads--;
         mark_job_start(NULL, "idle done");
@@ -242,7 +243,7 @@ Job *submit_job_real(Directory *from, Entry *fentry, Directory *to, const char *
         /*for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next) {
                 assert(queue_job->magick == 0x10b10b);
         }*/
-        pthread_cond_broadcast(&cond);
+        pthread_cond_signal(&job_submitted);
         job_unlock();
         return job;
 }
@@ -288,7 +289,7 @@ Job *submit_job_first(Directory *from, Entry *fentry, Directory *to, const char 
         /*for (Job *queue_job = first_job; queue_job; queue_job = queue_job->next) {
                 assert(queue_job->magick == 0x10b10b);
         }*/
-        pthread_cond_broadcast(&cond);
+        pthread_cond_signal(&job_submitted);
         job_unlock();
         return job;
 }
@@ -358,7 +359,7 @@ void start_job_threads(int job_threads)
         }
         // printf("Started %d job threads.\n",job_threads);
         job_lock();
-        pthread_cond_broadcast(&cond); /* Kickstart the threads */
+        pthread_cond_broadcast(&job_submitted); /* Kickstart the threads */
         /* Show progress until all jobs are finished. */
         while (scans.queued > 0)
         {
@@ -368,7 +369,7 @@ void start_job_threads(int job_threads)
                 long long now = ts.tv_sec * 1000000000L + ts.tv_nsec;
                 ts.tv_sec+=1;
                 // FIXME: this can hang if IO is stalled. How?
-                if (pthread_cond_timedwait(&cond, &job_mutex, &ts)==ETIMEDOUT)
+                if (pthread_cond_timedwait(&job_done, &job_mutex, &ts)==ETIMEDOUT)
                 {
                         //fprintf(tty_stream, "thread timeout\n");
                         scans.slow_io_secs++;
