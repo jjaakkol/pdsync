@@ -43,7 +43,6 @@ static int preserve_links=0;
 static int preserve_sparse=0;
 static int preserve_hard_links=0;
 int recursive=0;
-static int safe_mode=0;
 static int update_all=0;
 static int show_warnings=1;
 static int check=0;
@@ -1809,32 +1808,25 @@ JobResult sync_files(Directory *from, Entry *parent_fentry, Directory *to, const
 }
 
 int main(int argc, char *argv[]) {
+        memset(&scans,0,sizeof(scans));
+        memset(&opers,0,sizeof(opers));
 
-    memset(&scans,0,sizeof(scans));
-    memset(&opers,0,sizeof(opers));
+        /* Check the options */
+        parse_options(argc, argv);
+        static_argv=argv;
 
-    /* Check the options */
-    parse_options(argc, argv);
-    static_argv=argv;
-    if (safe_mode && !quiet) {
-        printf("Running in in slower safe mode: removing access to users before updating targets.\n");
-    }
-    myuid=getuid();
-    if (argc-optind!=2) {
-	fprintf(stderr,"Need to have source and destination dirs\n");
-	show_help();
-	exit(1);
-    }
+        myuid=getuid();
+        if (argc-optind!=2) {
+	        fprintf(stderr,"Need to have source and destination dirs\n");
+	        show_help();
+	        exit(1);
+        }
 
-    if (preserve_hard_links) {
-	/* Init the hash table */
-	if ( (link_htable=malloc(sizeof(Link *)*hash_size))==NULL ) {
-	    perror("malloc");
-	    exit(2);
-	}
-	memset(link_htable,0,sizeof(Link *)*hash_size);
-    }
-    
+        if (preserve_hard_links) {
+	        /* Init the hash table */
+	        link_htable=my_calloc(hash_size, sizeof(Link *));
+        }
+
         // Open source and target directories
         int sfd=dir_openat(NULL, argv[optind]);
         if (sfd<0) {
