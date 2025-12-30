@@ -973,15 +973,14 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         }
 
         end:
-
-        if (tofd>=0) close(tofd);
-        if (fromfd>=0) close(fromfd);
-
         /* Optimization: if there was only one chunk of file to copy or 0 size file, we call sync_metadata immediately */
         if (offset==0 && num_jobs<=1) sync_metadata(from, fentry, to, target, 0);
+
+        cleanup:
+        if (tofd>=0) close(tofd);
+        if (fromfd>=0) close(fromfd);
         if (from_dfd>=0) dir_close(from);
         if (to_dfd>=0) dir_close(to);
-
         if (offset>=0) {
                 snprintf(buf,sizeof(buf)-1,"copy %ld done", offset/copy_job_size);
                 set_thread_status(file_path(to,target),buf);
@@ -992,7 +991,7 @@ int copy_regular(Directory *from, Entry *fentry, Directory *to, const char *targ
         item2("# cp failed", to, target);
         fentry->state=ENTRY_FAILED;
         ret = RET_FAILED;
-        goto end;
+        goto cleanup; // Skip sync_metadata() if copy job failed.
 }
 
 static int should_exclude(const Directory *from, const Entry *entry) {
@@ -1214,6 +1213,10 @@ JobResult sync_metadata(Directory *not_used, Entry *fentry, Directory *to, const
         struct stat to_stat;
         set_thread_status(file_path(to, target),"metadata");
 
+        if (fentry->state==ENTRY_FAILED) {
+                item2("# sync_metadata skipped because of read error", to, target);
+                return RET_FAILED;
+        }
         if (target==NULL) {
                 target="."; // Target the directory itself. 
         }
