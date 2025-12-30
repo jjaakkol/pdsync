@@ -25,19 +25,19 @@ typedef struct JobStruct
 } Job;
 
 
-static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static Job *first_job = NULL;
 static Job *last_job=NULL;
 
 void job_lock(void) {
-        pthread_mutex_lock(&mut);
+        pthread_mutex_lock(&job_mutex);
 }
 
 void job_unlock(void) {
-        int rc = pthread_mutex_trylock(&mut);
+        int rc = pthread_mutex_trylock(&job_mutex);
         assert(rc == EBUSY);
-        pthread_mutex_unlock(&mut);
+        pthread_mutex_unlock(&job_mutex);
 }
 
 // Threads status counting, mostly for debugging and progress reporting
@@ -126,9 +126,9 @@ JobResult run_one_job(Job *j)
                 assert(j->magick == 0x10b10b);
                 j->state = JOB_RUNNING;
                 mark_job_start(file_path(j->to, j->target), "job start");
-                pthread_mutex_unlock(&mut);
+                job_unlock();
                 j->ret = j->callback(j->from, j->fentry, j->to, j->target, j->offset);
-                pthread_mutex_lock(&mut);
+                job_lock();
                 mark_job_start(file_path(j->to, j->target), "job ended");
                 atomic_fetch_add(&scans.jobs_run, 1);
                 j->state = JOB_READY;
@@ -165,10 +165,9 @@ JobResult run_any_job()
 
         /* No jobs to run. We need to wait and release the lock. */
         mark_job_start(NULL, "idle");
-        // TODO: remove scans.idle_threads since we want better thread status counting anyway
         scans.idle_threads++;
         this_thread.idle=1;
-        pthread_cond_wait(&cond, &mut);
+        pthread_cond_wait(&cond, &job_mutex);
         this_thread.idle=0;
         scans.idle_threads--;
         mark_job_start(NULL, "idle done");
@@ -178,7 +177,7 @@ JobResult run_any_job()
 /* Threads wait in this loop for jobs to run */
 void *job_queue_loop(void *arg)
 {
-        pthread_mutex_lock(&mut);
+        job_lock();
         this_thread.prev = first_status;
         first_status = &this_thread;
         this_thread.tid = (pid_t)syscall(SYS_gettid); // gettid() is Linux specific and is not in older glibcs
@@ -358,7 +357,7 @@ void start_job_threads(int job_threads)
                 }
         }
         // printf("Started %d job threads.\n",job_threads);
-        pthread_mutex_lock(&mut);
+        job_lock();
         pthread_cond_broadcast(&cond); /* Kickstart the threads */
         /* Show progress until all jobs are finished. */
         while (scans.queued > 0)
@@ -369,7 +368,7 @@ void start_job_threads(int job_threads)
                 long long now = ts.tv_sec * 1000000000L + ts.tv_nsec;
                 ts.tv_sec+=1;
                 // FIXME: this can hang if IO is stalled. How?
-                if (pthread_cond_timedwait(&cond, &mut, &ts)==ETIMEDOUT)
+                if (pthread_cond_timedwait(&cond, &job_mutex, &ts)==ETIMEDOUT)
                 {
                         //fprintf(tty_stream, "thread timeout\n");
                         scans.slow_io_secs++;
@@ -383,5 +382,5 @@ void start_job_threads(int job_threads)
                         last_ns = now;
                 }
         }
-        pthread_mutex_unlock(&mut);
+        job_unlock();
 }
