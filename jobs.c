@@ -319,12 +319,13 @@ void print_queue(FILE *f) {
 }
 
 // Useful for seeing IO stalls and debugging
+// Maybe FIXME: thread status can be updated while printing it. Is this a problem?
 int print_jobs(FILE *f)
 {
         struct timespec now;
         clock_gettime(CLOCK_BOOTTIME, &now);
 
-        if (progress>=4) {
+        if (progress>=5) {
                 fprintf(f, "TID     : runtime : job\n");
         } else if (progress>=3 && count_stalled_threads()>0) {
                 fprintf(f, "TID     : runtime : slow jobs or stalled\n");
@@ -378,8 +379,8 @@ void start_job_threads(int job_threads)
                 {
                         job_unlock();
                         print_progress();
+                        if (progress>=4) print_jobs(tty_stream);
                         job_lock();
-                        if (progress>=3) print_jobs(tty_stream); // print_jobs needs the lock
                         last_ns = now;
                 }
         }

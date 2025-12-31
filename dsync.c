@@ -404,6 +404,9 @@ static void print_scans(const Scans *scans) {
         if (scans->hard_links_saved) {
                 printf("%8d hard links found\n", scans->hard_links_saved);
         }
+        if (progress<=3) return;
+
+        // Statistics for debugging
         if (scans->jobs_run) {
                 printf("%8lld total number of jobs run\n", scans->jobs_run);
         }
