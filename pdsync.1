@@ -1,0 +1,128 @@
+.TH PDSYNC 1 "December 2025" "pdsync 1.9" "User Commands"
+.SH NAME
+pdsync \- synchronize two local directories in parallel
+.SH SYNOPSIS
+.B pdsync
+[options] <fromdir> <todir>
+.SH DESCRIPTION
+pdsync is a tool for fast, parallel synchronization of two local directories. It supports a variety of options for controlling what is copied, how metadata is handled, and performance tuning.
+.SH OPTIONS
+.TP
+.B -n, --dry-run
+Perform a trial run with no changes made.
+.TP
+.B -i, --itemize
+Output a shell script that replicates the changes pdsync would make to the target directory. 
+Useful with --dry-run to preview changes and optionally apply them later. 
+If repeated, includes comments about files not updated.
+.TP
+.B -P, --progress
+Show progress information on the terminal. 
+-PP shows also changes made to target directory. 
+-PPP shows statistics of seen files and directories. 
+-PPPP shows internal information useful mostly for debugging.
+.TP
+.B -V, --version
+Show version information and exit.
+.TP
+.B -h, --help
+Show help message and exit.
+.TP
+.B -x, --one-file-system
+Do not cross filesystem boundaries.
+.TP
+.B -q, --quiet
+Suppress non-error messages. Repeat for more quietness.
+.TP
+.B -d, --delete
+Delete files in the destination that are not in the source.
+.TP
+.B -a, --archive
+Archive mode; equivalent to -rlptgoD (recursive, links, perms, times, group, owner, devices).
+.TP
+.B -l, --links
+Copy symlinks as symlinks.
+.TP
+.B -p, --perms
+Preserve permissions.
+.TP
+.B -o, --owner
+Preserve owner (root only).
+.TP
+.B -g, --group
+Preserve group.
+.TP
+.B -D, --devices
+Preserve device files (not implemented).
+.TP
+.B -t, --times
+Preserve modification times.
+.TP
+.B -r, --recursive
+Recurse into directories.
+.TP
+.B -U, --update
+Check all files for differences regardless of timestamps and update them if needed. 
+.TP
+.B -S, --sparse
+Handle sparse files efficiently.
+.TP
+.B -H, --hard-links
+Preserve hard links.
+.TP
+.B -X, --exclude-regex <regex>
+Exclude files matching the given regular expression.
+.TP
+.B --copy-job-size <MB>
+Set the copy job size in megabytes (default: 1, max: 128).
+.TP
+.B --io_uring
+Use io_uring for file operations (experimental).
+.TP
+.B --atimes
+Preserve access times.
+.TP
+.B --privacy
+Hide file paths in error messages.
+.TP
+.B --delete-only
+Only delete files in the destination, do not copy.
+.TP
+.B --threads <N>
+Set the number of worker threads (1–256). 
+Every thread needs at least 4 file descriptors so you might consider 
+using ulimit -n to make more file descriptors available. 
+.TP
+.B --sync-tag <tag>
+Set a synchronization tag.
+.TP
+.B --sync-tag-name <name>
+Set the name for the synchronization tag.
+.TP
+.B --debug
+Enable debug output.
+.TP
+.B --check
+Enable extra file checks.
+.TP
+.B --stats
+Print statistics after completion.
+.TP
+.B --reflink
+.TP
+.B --reflink
+Use copy-on-write (reflink). This requires support from the filesystem and source and target must be on the same filesystem.
+.SH EXAMPLES
+Synchronize two directories:
+.nf
+pdsync -a /src/dir /dst/dir
+.fi
+
+Dry run, showing what would be changed:
+.nf
+pdsync -ni /src/dir /dst/dir
+.fi
+.SH AUTHOR
+Jani Jaakkola <jani.jaakkola@helsinki.fi>
+.SH SEE ALSO
+rsync(1), cp(1)
